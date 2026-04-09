@@ -1,0 +1,1114 @@
+{
+  "info": {
+    "name": "We Safe Backend API",
+    "description": "# We Safe Backend API\n\nImport this collection into Postman.\n\nCollection variables included:\n- `baseUrl`\n- `userEmail`, `userPassword`\n- `adminEmail`, `adminPassword`\n- `userAccessToken`, `adminAccessToken`\n- reset tokens and resource ids used by follow-up requests\n\nSeed accounts:\n- User: `madiha.aroa@example.com / Password123!`\n- Admin: `admin@wesafe.app / Admin123!`\n\nThe backend also proxies AI prompt and chat requests to the hosted Python service documented at `https://mattiaiaricco-ai-chatbot.onrender.com/docs`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000", "type": "string" },
+    { "key": "userEmail", "value": "madiha.aroa@example.com", "type": "string" },
+    { "key": "userPassword", "value": "Password123!", "type": "string" },
+    { "key": "adminEmail", "value": "admin@wesafe.app", "type": "string" },
+    { "key": "adminPassword", "value": "Admin123!", "type": "string" },
+    { "key": "newUserFirstName", "value": "Amina", "type": "string" },
+    { "key": "newUserLastName", "value": "Rahman", "type": "string" },
+    { "key": "newUserEmail", "value": "amina.rahman@example.com", "type": "string" },
+    { "key": "newUserPassword", "value": "Password123!", "type": "string" },
+    { "key": "newUserPhoneNumber", "value": "+8801700112233", "type": "string" },
+    { "key": "newUserAvatarUrl", "value": "https://placehold.co/160x160/png?text=NEW", "type": "string" },
+    { "key": "socialEmail", "value": "social.user@example.com", "type": "string" },
+    { "key": "socialFullName", "value": "Social User", "type": "string" },
+    { "key": "socialAvatarUrl", "value": "https://placehold.co/160x160/png?text=SOCIAL", "type": "string" },
+    { "key": "legalSlug", "value": "about-app", "type": "string" },
+    { "key": "publicTipIdOrSlug", "value": "fire-safety-at-home", "type": "string" },
+    { "key": "templateChecklistId", "value": "checklist_earthquake_prep", "type": "string" },
+    { "key": "templateChecklistItemId", "value": "eq_item_1", "type": "string" },
+    { "key": "notificationId", "value": "", "type": "string" },
+    { "key": "userAccessToken", "value": "", "type": "string" },
+    { "key": "adminAccessToken", "value": "", "type": "string" },
+    { "key": "userId", "value": "", "type": "string" },
+    { "key": "adminId", "value": "", "type": "string" },
+    { "key": "userResetOtp", "value": "", "type": "string" },
+    { "key": "userResetToken", "value": "", "type": "string" },
+    { "key": "adminResetOtp", "value": "", "type": "string" },
+    { "key": "adminResetToken", "value": "", "type": "string" },
+    { "key": "customChecklistId", "value": "", "type": "string" },
+    { "key": "customChecklistItemId", "value": "", "type": "string" },
+    { "key": "conversationId", "value": "", "type": "string" },
+    { "key": "adminChecklistId", "value": "", "type": "string" },
+    { "key": "adminChecklistItemId", "value": "", "type": "string" },
+    { "key": "adminSafetyTipId", "value": "", "type": "string" },
+    { "key": "adminSafetyTipSlug", "value": "", "type": "string" },
+    { "key": "uploadedPublicId", "value": "", "type": "string" },
+    { "key": "uploadedSecureUrl", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "System & Docs",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/",
+            "description": "Checks whether the Express backend is running and returns health plus docs links."
+          }
+        },
+        {
+          "name": "HTML Docs",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/docs",
+            "description": "Returns the built-in HTML docs page served by the backend."
+          }
+        },
+        {
+          "name": "JSON API Catalog",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/docs/json",
+            "description": "Returns the backend API catalog in JSON format."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth - User",
+      "item": [
+        {
+          "name": "Register User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.accessToken) pm.collectionVariables.set('userAccessToken', json.data.accessToken);",
+                  "if (json?.data?.user?.id) pm.collectionVariables.set('userId', json.data.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "firstName", "value": "{{newUserFirstName}}", "type": "text" },
+                { "key": "lastName", "value": "{{newUserLastName}}", "type": "text" },
+                { "key": "phoneNumber", "value": "{{newUserPhoneNumber}}", "type": "text" },
+                { "key": "preferredLanguage", "value": "en", "type": "text" },
+                { "key": "email", "value": "{{newUserEmail}}", "type": "text" },
+                { "key": "password", "value": "{{newUserPassword}}", "type": "text" },
+                { "key": "confirmPassword", "value": "{{newUserPassword}}", "type": "text" },
+                { "key": "avatar", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/auth/register",
+            "description": "Creates a mobile user account and returns an access token. Upload avatar with multipart/form-data using the avatar file field."
+          }
+        },
+        {
+          "name": "Login User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.accessToken) pm.collectionVariables.set('userAccessToken', json.data.accessToken);",
+                  "if (json?.data?.user?.id) pm.collectionVariables.set('userId', json.data.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "description": "User email/password login. Saves userAccessToken and userId."
+          }
+        },
+        {
+          "name": "Social Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.accessToken) pm.collectionVariables.set('userAccessToken', json.data.accessToken);",
+                  "if (json?.data?.user?.id) pm.collectionVariables.set('userId', json.data.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "provider", "value": "google", "type": "text" },
+                { "key": "email", "value": "{{socialEmail}}", "type": "text" },
+                { "key": "fullName", "value": "{{socialFullName}}", "type": "text" },
+                { "key": "avatar", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/auth/social-login",
+            "description": "Creates or refreshes a local user after social sign-in and returns a local session token. Upload avatar with multipart/form-data using the avatar file field."
+          }
+        },
+        {
+          "name": "Request User Password Reset OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.debugOtp) pm.collectionVariables.set('userResetOtp', json.data.debugOtp);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{userEmail}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/auth/password-reset/request",
+            "description": "Starts the user password reset flow. Outside production the response includes debugOtp."
+          }
+        },
+        {
+          "name": "Verify User Password Reset OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.resetToken) pm.collectionVariables.set('userResetToken', json.data.resetToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"otpCode\": \"{{userResetOtp}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/auth/password-reset/verify",
+            "description": "Verifies the user OTP and saves userResetToken."
+          }
+        },
+        {
+          "name": "Reset User Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"resetToken\": \"{{userResetToken}}\",\n  \"password\": \"{{newUserPassword}}\",\n  \"confirmPassword\": \"{{newUserPassword}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/auth/password-reset/reset",
+            "description": "Completes the user password reset flow."
+          }
+        },
+        {
+          "name": "Logout User",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{userAccessToken}}", "type": "string" }
+              ]
+            },
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/auth/logout",
+            "description": "Invalidates the current user session token."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth - Admin",
+      "item": [
+        {
+          "name": "Login Admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.accessToken) pm.collectionVariables.set('adminAccessToken', json.data.accessToken);",
+                  "if (json?.data?.user?.id) pm.collectionVariables.set('adminId', json.data.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/auth/admin/login",
+            "description": "Admin email/password login. Saves adminAccessToken and adminId."
+          }
+        },
+        {
+          "name": "Request Admin Password Reset OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.debugOtp) pm.collectionVariables.set('adminResetOtp', json.data.debugOtp);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/auth/admin/password-reset/request",
+            "description": "Starts the admin password reset flow. Outside production the response includes debugOtp."
+          }
+        },
+        {
+          "name": "Verify Admin Password Reset OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.resetToken) pm.collectionVariables.set('adminResetToken', json.data.resetToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"otpCode\": \"{{adminResetOtp}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/auth/admin/password-reset/verify",
+            "description": "Verifies the admin OTP and saves adminResetToken."
+          }
+        },
+        {
+          "name": "Reset Admin Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"resetToken\": \"{{adminResetToken}}\",\n  \"password\": \"{{adminPassword}}\",\n  \"confirmPassword\": \"{{adminPassword}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/auth/admin/password-reset/reset",
+            "description": "Completes the admin password reset flow."
+          }
+        },
+        {
+          "name": "Logout Admin",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{adminAccessToken}}", "type": "string" }
+              ]
+            },
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/auth/logout",
+            "description": "Invalidates the current admin session token."
+          }
+        }
+      ]
+    },
+    {
+      "name": "User App",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          { "key": "token", "value": "{{userAccessToken}}", "type": "string" }
+        ]
+      },
+      "item": [
+        {
+          "name": "Get Home Payload",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/home",
+            "description": "Returns the mobile home payload with greeting, quick actions, featured guides, checklist summary, and recent chat preview."
+          }
+        },
+        {
+          "name": "Get Current User",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/users/me",
+            "description": "Returns the authenticated user profile."
+          }
+        },
+        {
+          "name": "Update Current User",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "firstName", "value": "Madiha", "type": "text" },
+                { "key": "lastName", "value": "Aroa", "type": "text" },
+                { "key": "phoneNumber", "value": "+8801700000000", "type": "text" },
+                { "key": "avatar", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/users/me",
+            "description": "Updates editable user profile fields. Upload avatar with multipart/form-data using the avatar file field."
+          }
+        },
+        {
+          "name": "Get User Preferences",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/users/me/preferences",
+            "description": "Returns preferredLanguage, notificationsEnabled, onboardingCompleted, and supportedLanguages."
+          }
+        },
+        {
+          "name": "Update User Preferences",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"preferredLanguage\": \"bn\",\n  \"notificationsEnabled\": true,\n  \"onboardingCompleted\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/users/me/preferences",
+            "description": "Updates language, notifications, and onboarding flags."
+          }
+        },
+        {
+          "name": "Change User Password",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"{{userPassword}}\",\n  \"newPassword\": \"{{newUserPassword}}\",\n  \"confirmNewPassword\": \"{{newUserPassword}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/users/me/password",
+            "description": "Changes the password for the authenticated user."
+          }
+        },
+        {
+          "name": "List Notifications",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/notifications",
+            "description": "Lists user notifications in reverse chronological order."
+          }
+        },
+        {
+          "name": "Create Notification",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Storm alert\",\n  \"body\": \"Heavy rain is expected near your area. Review your emergency kit.\",\n  \"type\": \"warning\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/notifications",
+            "description": "Creates a user-scoped notification record."
+          }
+        },
+        {
+          "name": "Mark Notification Read",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/notifications/{{notificationId}}/read",
+            "description": "Marks a notification as read. Set notificationId manually from a previous list response."
+          }
+        },
+        {
+          "name": "Get Legal Document",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/legal/{{legalSlug}}",
+            "description": "Fetches a legal document. legalSlug defaults to about-app, but privacy-policy and terms-and-conditions are also seeded."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Safety Tips",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          { "key": "token", "value": "{{userAccessToken}}", "type": "string" }
+        ]
+      },
+      "item": [
+        {
+          "name": "List Safety Tips",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/safety-tips?page=1&limit=10&search=fire&category=Fire%20Safety&featured=false",
+            "description": "Lists published safety guides. Supports page, limit, search, category, and featured query parameters."
+          }
+        },
+        {
+          "name": "Get Safety Tip By ID Or Slug",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/safety-tips/{{publicTipIdOrSlug}}",
+            "description": "Returns one published safety guide with related tips. publicTipIdOrSlug defaults to fire-safety-at-home."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Checklists",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          { "key": "token", "value": "{{userAccessToken}}", "type": "string" }
+        ]
+      },
+      "item": [
+        {
+          "name": "List Checklists",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/checklists?search=earthquake&category=Earthquake",
+            "description": "Lists published template checklists plus the current user's custom checklists."
+          }
+        },
+        {
+          "name": "Create Custom Checklist",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.id) pm.collectionVariables.set('customChecklistId', json.data.id);",
+                  "if (json?.data?.items?.[0]?.id) pm.collectionVariables.set('customChecklistItemId', json.data.items[0].id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "Apartment fire drill", "type": "text" },
+                { "key": "category", "value": "Fire Safety", "type": "text" },
+                { "key": "description", "value": "Track evacuation and extinguisher readiness at home.", "type": "text" },
+                { "key": "items", "value": "[\"Test hallway smoke alarm\",\"Review escape route with family\"]", "type": "text" },
+                { "key": "icon", "type": "file", "src": [] },
+                { "key": "coverImage", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/checklists",
+            "description": "Creates a user-owned custom checklist and saves customChecklistId. Upload images with multipart/form-data using icon and coverImage file fields. Send items as a JSON string."
+          }
+        },
+        {
+          "name": "Get Checklist By ID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/checklists/{{customChecklistId}}",
+            "description": "Fetches a checklist with completion state. You can replace customChecklistId with templateChecklistId if needed."
+          }
+        },
+        {
+          "name": "Update Custom Checklist",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "Apartment fire drill updated", "type": "text" },
+                { "key": "category", "value": "Fire Safety", "type": "text" },
+                { "key": "description", "value": "Updated custom checklist description.", "type": "text" },
+                { "key": "items", "value": "[{\"id\":\"{{customChecklistItemId}}\",\"text\":\"Test hallway smoke alarm\",\"order\":1},{\"text\":\"Check spare flashlight batteries\",\"order\":2}]", "type": "text" },
+                { "key": "icon", "type": "file", "src": [] },
+                { "key": "coverImage", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/checklists/{{customChecklistId}}",
+            "description": "Updates a user-owned custom checklist. Upload images with multipart/form-data using icon and coverImage file fields. Send items as a JSON string."
+          }
+        },
+        {
+          "name": "Add Checklist Item",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "const items = json?.data?.items || [];",
+                  "if (items.length > 0) pm.collectionVariables.set('customChecklistItemId', items[items.length - 1].id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Store a printed emergency contact list\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/checklists/{{customChecklistId}}/items",
+            "description": "Adds a new item to a custom checklist and updates customChecklistItemId to the latest item."
+          }
+        },
+        {
+          "name": "Toggle Template Checklist Item Completion",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"toggle\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/checklists/{{templateChecklistId}}/items/{{templateChecklistItemId}}",
+            "description": "Toggles completion for an accessible checklist item. Defaults use the seeded earthquake checklist."
+          }
+        },
+        {
+          "name": "Edit Custom Checklist Item",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Updated custom checklist item text\",\n  \"completed\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/checklists/{{customChecklistId}}/items/{{customChecklistItemId}}",
+            "description": "Edits a custom checklist item and can also set its completion state."
+          }
+        },
+        {
+          "name": "Delete Custom Checklist Item",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/checklists/{{customChecklistId}}/items/{{customChecklistItemId}}",
+            "description": "Deletes one item from a custom checklist."
+          }
+        },
+        {
+          "name": "Delete Custom Checklist",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/checklists/{{customChecklistId}}",
+            "description": "Deletes a user-owned custom checklist."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chat",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          { "key": "token", "value": "{{userAccessToken}}", "type": "string" }
+        ]
+      },
+      "item": [
+        {
+          "name": "List Conversations",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/chat/conversations",
+            "description": "Lists stored conversation summaries for the authenticated user."
+          }
+        },
+        {
+          "name": "List History Alias",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/chat/history",
+            "description": "Alias of the chat history endpoint for the mobile history tab."
+          }
+        },
+        {
+          "name": "Get Conversation By ID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/chat/conversations/{{conversationId}}",
+            "description": "Fetches one conversation thread, including aiSource metadata."
+          }
+        },
+        {
+          "name": "Send Message - Start New Conversation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.conversation?.id) pm.collectionVariables.set('conversationId', json.data.conversation.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"What should I do first during an earthquake at home?\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/chat/messages",
+            "description": "Sends a message to the hosted AI backend and creates a new local conversation when no conversationId is supplied."
+          }
+        },
+        {
+          "name": "Send Message - Existing Conversation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.conversation?.id) pm.collectionVariables.set('conversationId', json.data.conversation.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conversationId\": \"{{conversationId}}\",\n  \"message\": \"Now give me a short safety checklist I can follow.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/chat/messages",
+            "description": "Sends a follow-up message into an existing conversation."
+          }
+        },
+        {
+          "name": "Delete Conversation",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/chat/conversations/{{conversationId}}",
+            "description": "Deletes a stored conversation thread."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          { "key": "token", "value": "{{adminAccessToken}}", "type": "string" }
+        ]
+      },
+      "item": [
+        {
+          "name": "Get Admin Dashboard",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/dashboard",
+            "description": "Returns dashboard summary metrics, recent activity, prompt snapshot, and checklist preview."
+          }
+        },
+        {
+          "name": "Get Admin Settings",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/settings",
+            "description": "Returns the authenticated admin profile."
+          }
+        },
+        {
+          "name": "Update Admin Settings",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "firstName", "value": "Roni", "type": "text" },
+                { "key": "lastName", "value": "Morris", "type": "text" },
+                { "key": "phoneNumber", "value": "+8801800000000", "type": "text" },
+                { "key": "avatar", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/admin/settings",
+            "description": "Updates editable admin profile fields. Upload avatar with multipart/form-data using the avatar file field."
+          }
+        },
+        {
+          "name": "Get AI Prompt",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/ai-prompt",
+            "description": "Reads the live prompt configuration from the hosted Python AI service through the local admin route."
+          }
+        },
+        {
+          "name": "Update AI Prompt",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"welcomeMessage\": \"You are connected to We Safe emergency assistant.\",\n  \"systemInstruction\": \"Provide calm, practical emergency guidance. Always prioritize life safety and advise calling local emergency services when immediate danger exists.\",\n  \"fallbackMessage\": \"I could not fully process that request. Please contact emergency services if this is urgent.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/admin/ai-prompt",
+            "description": "Updates the live AI prompt through the hosted Python service."
+          }
+        },
+        {
+          "name": "List Admin Checklists",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/checklists",
+            "description": "Lists all template checklists for admin CRUD."
+          }
+        },
+        {
+          "name": "Create Admin Checklist",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.id) pm.collectionVariables.set('adminChecklistId', json.data.id);",
+                  "if (json?.data?.items?.[0]?.id) pm.collectionVariables.set('adminChecklistItemId', json.data.items[0].id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "Heatwave readiness", "type": "text" },
+                { "key": "category", "value": "Heatwave", "type": "text" },
+                { "key": "description", "value": "Help users prepare their homes and supplies for extreme heat.", "type": "text" },
+                { "key": "status", "value": "published", "type": "text" },
+                { "key": "items", "value": "[{\"text\":\"Store clean drinking water\",\"order\":1},{\"text\":\"Review cooling centers nearby\",\"order\":2}]", "type": "text" },
+                { "key": "icon", "type": "file", "src": [] },
+                { "key": "coverImage", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/admin/checklists",
+            "description": "Creates a template checklist and saves adminChecklistId. Upload images with multipart/form-data using icon and coverImage file fields. Send items as a JSON string."
+          }
+        },
+        {
+          "name": "Update Admin Checklist",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "Heatwave readiness updated", "type": "text" },
+                { "key": "category", "value": "Heatwave", "type": "text" },
+                { "key": "description", "value": "Updated heatwave checklist description.", "type": "text" },
+                { "key": "status", "value": "draft", "type": "text" },
+                { "key": "items", "value": "[{\"id\":\"{{adminChecklistItemId}}\",\"text\":\"Store clean drinking water\",\"order\":1},{\"text\":\"Know how to cool one safe room\",\"order\":2}]", "type": "text" },
+                { "key": "icon", "type": "file", "src": [] },
+                { "key": "coverImage", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/admin/checklists/{{adminChecklistId}}",
+            "description": "Updates a template checklist. Upload images with multipart/form-data using icon and coverImage file fields. Send items as a JSON string."
+          }
+        },
+        {
+          "name": "Delete Admin Checklist",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/admin/checklists/{{adminChecklistId}}",
+            "description": "Deletes a template checklist and related progress rows."
+          }
+        },
+        {
+          "name": "List Admin Safety Tips",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/safety-tips",
+            "description": "Lists all safety tips, including drafts."
+          }
+        },
+        {
+          "name": "Create Admin Safety Tip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.id) pm.collectionVariables.set('adminSafetyTipId', json.data.id);",
+                  "if (json?.data?.slug) pm.collectionVariables.set('adminSafetyTipSlug', json.data.slug);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "Cyclone shelter checklist", "type": "text" },
+                { "key": "category", "value": "Cyclone", "type": "text" },
+                { "key": "summary", "value": "Prepare evacuation items and shelter transport before a cyclone warning escalates.", "type": "text" },
+                { "key": "contentSections", "value": "[{\"heading\":\"Before leaving\",\"body\":\"Carry documents, emergency medicine, water, and keep one contact informed.\"},{\"heading\":\"At the shelter\",\"body\":\"Stay with your family group and follow local responder instructions.\"}]", "type": "text" },
+                { "key": "doList", "value": "[\"Carry water\",\"Charge your phone\"]", "type": "text" },
+                { "key": "dontList", "value": "[\"Do not wait until roads flood\"]", "type": "text" },
+                { "key": "tags", "value": "[\"cyclone\",\"evacuation\",\"shelter\"]", "type": "text" },
+                { "key": "estimatedReadMinutes", "value": "5", "type": "text" },
+                { "key": "status", "value": "published", "type": "text" },
+                { "key": "language", "value": "en", "type": "text" },
+                { "key": "featured", "value": "true", "type": "text" },
+                { "key": "coverImage", "type": "file", "src": [] },
+                { "key": "thumbnail", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/admin/safety-tips",
+            "description": "Creates a safety guide and saves adminSafetyTipId and adminSafetyTipSlug. Upload images with multipart/form-data using coverImage and thumbnail file fields. Send contentSections, doList, dontList, and tags as JSON strings."
+          }
+        },
+        {
+          "name": "Update Admin Safety Tip",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "Cyclone shelter checklist updated", "type": "text" },
+                { "key": "category", "value": "Cyclone", "type": "text" },
+                { "key": "summary", "value": "Updated guide summary.", "type": "text" },
+                { "key": "contentSections", "value": "[{\"heading\":\"Before leaving\",\"body\":\"Carry medicine, water, documents, and a charged light source.\"}]", "type": "text" },
+                { "key": "doList", "value": "[\"Carry medicine\",\"Keep shoes ready\"]", "type": "text" },
+                { "key": "dontList", "value": "[\"Do not wait for the last minute\"]", "type": "text" },
+                { "key": "tags", "value": "[\"cyclone\",\"storm\"]", "type": "text" },
+                { "key": "estimatedReadMinutes", "value": "6", "type": "text" },
+                { "key": "status", "value": "draft", "type": "text" },
+                { "key": "language", "value": "en", "type": "text" },
+                { "key": "featured", "value": "false", "type": "text" },
+                { "key": "coverImage", "type": "file", "src": [] },
+                { "key": "thumbnail", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/admin/safety-tips/{{adminSafetyTipId}}",
+            "description": "Updates an existing safety guide. Upload images with multipart/form-data using coverImage and thumbnail file fields. Send contentSections, doList, dontList, and tags as JSON strings."
+          }
+        },
+        {
+          "name": "Delete Admin Safety Tip",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/admin/safety-tips/{{adminSafetyTipId}}",
+            "description": "Deletes a safety guide."
+          }
+        },
+        {
+          "name": "List Admin Activity",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/activity",
+            "description": "Lists the full admin activity feed."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Uploads",
+      "item": [
+        {
+          "name": "Upload Image",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.public_id) pm.collectionVariables.set('uploadedPublicId', json.data.public_id);",
+                  "if (json?.data?.secure_url) pm.collectionVariables.set('uploadedSecureUrl', json.data.secure_url);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "image", "type": "file", "src": [] },
+                { "key": "folder", "value": "checklists", "type": "text" }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/uploads",
+            "description": "Uploads an image to Cloudinary. Saves uploadedPublicId and uploadedSecureUrl. This route currently has no auth middleware."
+          }
+        },
+        {
+          "name": "Delete Image",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/uploads/{{uploadedPublicId}}",
+            "description": "Deletes a Cloudinary image by public_id. This route currently has no auth middleware."
+          }
+        }
+      ]
+    }
+  ]
+}

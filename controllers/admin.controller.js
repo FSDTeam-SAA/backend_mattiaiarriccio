@@ -1,0 +1,671 @@
+import { StatusCodes } from 'http-status-codes';
+import ApiError from '../utils/ApiError.js';
+import catchAsync from '../utils/catchAsync.js';
+import User from '../models/user.model.js';
+import Checklist from '../models/checklist.model.js';
+import ChecklistProgress from '../models/checklistProgress.model.js';
+import SafetyTip from '../models/safetyTip.model.js';
+import Conversation from '../models/conversation.model.js';
+import Activity from '../models/activity.model.js';
+import { fetchAiPrompt, updateAiPrompt } from '../services/ai.service.js';
+import { resolveImageUrl } from '../services/media.service.js';
+import { createSlug } from '../services/security.service.js';
+import { publicUser } from '../utils/serializers.js';
+import { sendSuccess } from '../utils/response.js';
+import { createId } from '../lib/id.js';
+import { logActivity } from '../services/activity.service.js';
+import {
+  parseArrayInput,
+  parseBooleanInput,
+  parseIntegerInput
+} from '../utils/requestParsers.js';
+
+const normalizeItems = (items = []) =>
+  items
+    .map((item, index) => {
+      if (typeof item === 'string') {
+        return {
+          _id: createId('item'),
+          text: item.trim(),
+          order: index + 1
+        };
+      }
+
+      return {
+        _id: item._id || item.id || createId('item'),
+        text: String(item.text || '').trim(),
+        order: Number.isFinite(item.order) ? item.order : index + 1
+      };
+    })
+    .filter((item) => item.text);
+
+const normalizeContentSections = (sections = [], fallbackBody = '') => {
+  if (Array.isArray(sections) && sections.length > 0) {
+    return sections
+      .map((section) => ({
+        heading: String(section.heading || '').trim(),
+        body: String(section.body || '').trim()
+      }))
+      .filter((section) => section.heading || section.body);
+  }
+
+  if (!fallbackBody) {
+    return [];
+  }
+
+  return [
+    {
+      heading: 'Overview',
+      body: String(fallbackBody).trim()
+    }
+  ];
+};
+
+export const getAdminDashboard = catchAsync(async (req, res) => {
+  const [
+    totalUsers,
+    totalChecklists,
+    totalSafetyTips,
+    totalChats,
+    publishedSafetyTips,
+    recentActivity,
+    aiPrompt
+  ] = await Promise.all([
+    User.countDocuments({ role: 'user' }),
+    Checklist.countDocuments({ type: 'template' }),
+    SafetyTip.countDocuments(),
+    Conversation.countDocuments(),
+    SafetyTip.countDocuments({ status: 'published' }),
+    Activity.find().sort({ createdAt: -1 }).limit(10).lean(),
+    fetchAiPrompt().catch(() => null)
+  ]);
+
+  const templatesPreview = await Checklist.find({ type: 'template' })
+    .sort({ updatedAt: -1 })
+    .limit(5)
+    .lean();
+
+  sendSuccess(res, {
+    message: 'Admin dashboard fetched successfully',
+    data: {
+      summary: {
+        totalUsers,
+        totalChecklists,
+        totalSafetyTips,
+        totalChats,
+        publishedSafetyTips
+      },
+      recentActivity: recentActivity.map((item) => ({
+        id: item._id,
+        type: item.type,
+        actorId: item.actorId,
+        title: item.title,
+        description: item.description,
+        createdAt: item.createdAt
+      })),
+      aiPrompt,
+      templatesPreview: templatesPreview.map((checklist) => ({
+        id: checklist._id,
+        title: checklist.title,
+        status: checklist.status,
+        itemCount: checklist.items.length,
+        updatedAt: checklist.updatedAt
+      }))
+    }
+  });
+});
+
+export const getAdminSettings = catchAsync(async (req, res) => {
+  const admin = await User.findById(req.auth.user._id).lean();
+
+  sendSuccess(res, {
+    message: 'Admin settings fetched successfully',
+    data: publicUser(admin)
+  });
+});
+
+export const updateAdminSettings = catchAsync(async (req, res) => {
+  const admin = await User.findById(req.auth.user._id);
+
+  if (!admin || admin.role !== 'admin') {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Admin account not found');
+  }
+
+  if (req.body.firstName !== undefined) {
+    admin.firstName = String(req.body.firstName).trim();
+  }
+
+  if (req.body.lastName !== undefined) {
+    admin.lastName = String(req.body.lastName).trim();
+  }
+
+  admin.fullName = `${admin.firstName} ${admin.lastName}`.trim();
+
+  if (req.body.phoneNumber !== undefined) {
+    admin.phoneNumber = String(req.body.phoneNumber).trim();
+  }
+
+  admin.avatarUrl = await resolveImageUrl({
+    req,
+    folder: 'admins/avatars',
+    fieldNames: ['avatar', 'avatarImage', 'avatarUrl'],
+    bodyValue: req.body.avatarUrl,
+    currentValue: admin.avatarUrl
+  });
+
+  await admin.save();
+
+  sendSuccess(res, {
+    message: 'Admin settings updated successfully',
+    data: publicUser(admin.toObject())
+  });
+});
+
+export const getAiPromptConfig = catchAsync(async (req, res) => {
+  const prompt = await fetchAiPrompt();
+
+  sendSuccess(res, {
+    message: 'AI prompt fetched successfully',
+    data: prompt
+  });
+});
+
+export const patchAiPromptConfig = catchAsync(async (req, res) => {
+  const prompt = await updateAiPrompt({
+    welcomeMessage:
+      req.body.welcomeMessage !== undefined
+        ? req.body.welcomeMessage
+        : req.body.welcome_message,
+    systemInstruction:
+      req.body.systemInstruction !== undefined
+        ? req.body.systemInstruction
+        : req.body.system_instruction,
+    fallbackMessage:
+      req.body.fallbackMessage !== undefined
+        ? req.body.fallbackMessage
+        : req.body.fallback_message
+  });
+
+  await logActivity({
+    type: 'ai.prompt.updated',
+    actorId: req.auth.user._id,
+    title: 'AI prompt updated',
+    description: 'Prompt settings were synced to the hosted Python AI backend.'
+  });
+
+  sendSuccess(res, {
+    message: 'AI prompt updated successfully',
+    data: prompt
+  });
+});
+
+export const listAdminChecklists = catchAsync(async (req, res) => {
+  const checklists = await Checklist.find({ type: 'template' })
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  sendSuccess(res, {
+    message: 'Admin checklists fetched successfully',
+    data: checklists.map((checklist) => ({
+      id: checklist._id,
+      type: checklist.type,
+      title: checklist.title,
+      category: checklist.category,
+      description: checklist.description,
+      iconUrl: checklist.iconUrl,
+      coverImageUrl: checklist.coverImageUrl,
+      status: checklist.status,
+      createdBy: checklist.createdBy,
+      itemCount: checklist.items.length,
+      items: checklist.items.map((item) => ({
+        id: item._id,
+        text: item.text,
+        order: item.order
+      })),
+      createdAt: checklist.createdAt,
+      updatedAt: checklist.updatedAt
+    }))
+  });
+});
+
+export const createAdminChecklist = catchAsync(async (req, res) => {
+  const title = String(req.body.title || '').trim();
+
+  if (!title) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'title is required');
+  }
+
+  const itemsInput = parseArrayInput(req.body.items) || [];
+  const iconUrl = await resolveImageUrl({
+    req,
+    folder: 'checklists/icons',
+    fieldNames: ['icon', 'iconImage', 'iconUrl'],
+    bodyValue: req.body.iconUrl,
+    defaultValue: 'https://placehold.co/128x128/png?text=TEMPLATE'
+  });
+  const coverImageUrl = await resolveImageUrl({
+    req,
+    folder: 'checklists/covers',
+    fieldNames: ['coverImage', 'cover', 'coverImageUrl'],
+    bodyValue: req.body.coverImageUrl,
+    defaultValue: 'https://placehold.co/1200x800/png?text=Checklist'
+  });
+
+  const checklist = await Checklist.create({
+    _id: createId('checklist'),
+    type: 'template',
+    ownerId: null,
+    title,
+    category: String(req.body.category || 'General').trim(),
+    description: String(req.body.description || '').trim(),
+    iconUrl,
+    coverImageUrl,
+    status: String(req.body.status || 'published').trim(),
+    createdBy: req.auth.user._id,
+    items: normalizeItems(itemsInput)
+  });
+
+  await logActivity({
+    type: 'checklist.created',
+    actorId: req.auth.user._id,
+    title: `New checklist: ${checklist.title}`,
+    description: 'A new admin checklist template was created.'
+  });
+
+  sendSuccess(res, {
+    statusCode: StatusCodes.CREATED,
+    message: 'Admin checklist created successfully',
+    data: {
+      id: checklist._id,
+      title: checklist.title,
+      category: checklist.category,
+      description: checklist.description,
+      iconUrl: checklist.iconUrl,
+      coverImageUrl: checklist.coverImageUrl,
+      status: checklist.status,
+      createdBy: checklist.createdBy,
+      items: checklist.items.map((item) => ({
+        id: item._id,
+        text: item.text,
+        order: item.order
+      })),
+      createdAt: checklist.createdAt,
+      updatedAt: checklist.updatedAt
+    }
+  });
+});
+
+export const updateAdminChecklist = catchAsync(async (req, res) => {
+  const checklist = await Checklist.findOne({
+    _id: req.params.checklistId,
+    type: 'template'
+  });
+
+  if (!checklist) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist template not found');
+  }
+
+  if (req.body.title !== undefined) {
+    const title = String(req.body.title).trim();
+    if (!title) {
+      throw new ApiError(StatusCodes.BAD_REQUEST, 'title cannot be empty');
+    }
+    checklist.title = title;
+  }
+
+  if (req.body.category !== undefined) {
+    checklist.category = String(req.body.category).trim();
+  }
+
+  if (req.body.description !== undefined) {
+    checklist.description = String(req.body.description).trim();
+  }
+
+  checklist.iconUrl = await resolveImageUrl({
+    req,
+    folder: 'checklists/icons',
+    fieldNames: ['icon', 'iconImage', 'iconUrl'],
+    bodyValue: req.body.iconUrl,
+    currentValue: checklist.iconUrl
+  });
+
+  checklist.coverImageUrl = await resolveImageUrl({
+    req,
+    folder: 'checklists/covers',
+    fieldNames: ['coverImage', 'cover', 'coverImageUrl'],
+    bodyValue: req.body.coverImageUrl,
+    currentValue: checklist.coverImageUrl
+  });
+
+  if (req.body.status !== undefined) {
+    checklist.status = String(req.body.status).trim();
+  }
+
+  if (req.body.items !== undefined) {
+    checklist.items = normalizeItems(parseArrayInput(req.body.items) || []);
+  }
+
+  await checklist.save();
+
+  await logActivity({
+    type: 'checklist.updated',
+    actorId: req.auth.user._id,
+    title: `Checklist updated: ${checklist.title}`,
+    description: 'A template checklist was updated from the admin console.'
+  });
+
+  sendSuccess(res, {
+    message: 'Admin checklist updated successfully',
+    data: {
+      id: checklist._id,
+      title: checklist.title,
+      category: checklist.category,
+      description: checklist.description,
+      iconUrl: checklist.iconUrl,
+      coverImageUrl: checklist.coverImageUrl,
+      status: checklist.status,
+      items: checklist.items.map((item) => ({
+        id: item._id,
+        text: item.text,
+        order: item.order
+      })),
+      createdAt: checklist.createdAt,
+      updatedAt: checklist.updatedAt
+    }
+  });
+});
+
+export const deleteAdminChecklist = catchAsync(async (req, res) => {
+  const checklist = await Checklist.findOneAndDelete({
+    _id: req.params.checklistId,
+    type: 'template'
+  });
+
+  if (!checklist) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist template not found');
+  }
+
+  await ChecklistProgress.deleteMany({ checklistId: checklist._id });
+
+  await logActivity({
+    type: 'checklist.deleted',
+    actorId: req.auth.user._id,
+    title: `Checklist deleted: ${checklist.title}`,
+    description: 'A template checklist was removed.'
+  });
+
+  sendSuccess(res, {
+    message: 'Admin checklist deleted successfully'
+  });
+});
+
+export const listAdminSafetyTips = catchAsync(async (req, res) => {
+  const tips = await SafetyTip.find().sort({ updatedAt: -1 }).lean();
+
+  sendSuccess(res, {
+    message: 'Admin safety tips fetched successfully',
+    data: tips.map((tip) => ({
+      id: tip._id,
+      slug: tip.slug,
+      title: tip.title,
+      category: tip.category,
+      summary: tip.summary,
+      contentSections: tip.contentSections,
+      doList: tip.doList,
+      dontList: tip.dontList,
+      tags: tip.tags,
+      estimatedReadMinutes: tip.estimatedReadMinutes,
+      coverImageUrl: tip.coverImageUrl,
+      thumbnailUrl: tip.thumbnailUrl,
+      status: tip.status,
+      language: tip.language,
+      featured: tip.featured,
+      createdAt: tip.createdAt,
+      updatedAt: tip.updatedAt
+    }))
+  });
+});
+
+export const createAdminSafetyTip = catchAsync(async (req, res) => {
+  const title = String(req.body.title || '').trim();
+
+  if (!title) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'title is required');
+  }
+
+  const contentSectionsInput = parseArrayInput(req.body.contentSections);
+  const doListInput = parseArrayInput(req.body.doList);
+  const dontListInput = parseArrayInput(req.body.dontList);
+  const tagsInput = parseArrayInput(req.body.tags);
+  const estimatedReadMinutes =
+    parseIntegerInput(req.body.estimatedReadMinutes) ?? 4;
+  const coverImageUrl = await resolveImageUrl({
+    req,
+    folder: 'safety-tips/covers',
+    fieldNames: ['coverImage', 'cover', 'coverImageUrl'],
+    bodyValue: req.body.coverImageUrl,
+    defaultValue: 'https://placehold.co/1200x800/png?text=Safety+Tip'
+  });
+  const thumbnailUrl = await resolveImageUrl({
+    req,
+    folder: 'safety-tips/thumbnails',
+    fieldNames: ['thumbnail', 'thumbnailImage', 'thumbnailUrl'],
+    bodyValue: req.body.thumbnailUrl,
+    defaultValue: 'https://placehold.co/600x400/png?text=Safety+Tip'
+  });
+
+  const tip = await SafetyTip.create({
+    _id: createId('tip'),
+    slug: createSlug(title),
+    title,
+    category: String(req.body.category || 'General').trim(),
+    summary: String(req.body.summary || '').trim(),
+    contentSections: normalizeContentSections(
+      contentSectionsInput,
+      req.body.content || req.body.body || ''
+    ),
+    doList: Array.isArray(doListInput)
+      ? doListInput.map((item) => String(item).trim()).filter(Boolean)
+      : [],
+    dontList: Array.isArray(dontListInput)
+      ? dontListInput.map((item) => String(item).trim()).filter(Boolean)
+      : [],
+    tags: Array.isArray(tagsInput)
+      ? tagsInput.map((item) => String(item).trim()).filter(Boolean)
+      : [],
+    estimatedReadMinutes,
+    coverImageUrl,
+    thumbnailUrl,
+    status: String(req.body.status || 'published').trim(),
+    language: String(req.body.language || 'en').trim(),
+    featured: parseBooleanInput(req.body.featured) ?? false
+  });
+
+  await logActivity({
+    type: 'guide.created',
+    actorId: req.auth.user._id,
+    title: `New guide: ${tip.title}`,
+    description: 'A new safety guide was published from the admin console.'
+  });
+
+  sendSuccess(res, {
+    statusCode: StatusCodes.CREATED,
+    message: 'Admin safety tip created successfully',
+    data: {
+      id: tip._id,
+      slug: tip.slug,
+      title: tip.title,
+      category: tip.category,
+      summary: tip.summary,
+      contentSections: tip.contentSections,
+      doList: tip.doList,
+      dontList: tip.dontList,
+      tags: tip.tags,
+      estimatedReadMinutes: tip.estimatedReadMinutes,
+      coverImageUrl: tip.coverImageUrl,
+      thumbnailUrl: tip.thumbnailUrl,
+      status: tip.status,
+      language: tip.language,
+      featured: tip.featured,
+      createdAt: tip.createdAt,
+      updatedAt: tip.updatedAt
+    }
+  });
+});
+
+export const updateAdminSafetyTip = catchAsync(async (req, res) => {
+  const tip = await SafetyTip.findById(req.params.tipId);
+
+  if (!tip) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Safety tip not found');
+  }
+
+  if (req.body.title !== undefined) {
+    const title = String(req.body.title).trim();
+    if (!title) {
+      throw new ApiError(StatusCodes.BAD_REQUEST, 'title cannot be empty');
+    }
+    tip.title = title;
+    tip.slug = createSlug(title);
+  }
+
+  if (req.body.category !== undefined) {
+    tip.category = String(req.body.category).trim();
+  }
+
+  if (req.body.summary !== undefined) {
+    tip.summary = String(req.body.summary).trim();
+  }
+
+  if (
+    req.body.contentSections !== undefined ||
+    req.body.content !== undefined ||
+    req.body.body !== undefined
+  ) {
+    tip.contentSections = normalizeContentSections(
+      parseArrayInput(req.body.contentSections),
+      req.body.content || req.body.body || ''
+    );
+  }
+
+  if (req.body.doList !== undefined) {
+    const doListInput = parseArrayInput(req.body.doList);
+    tip.doList = Array.isArray(doListInput)
+      ? doListInput.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+  }
+
+  if (req.body.dontList !== undefined) {
+    const dontListInput = parseArrayInput(req.body.dontList);
+    tip.dontList = Array.isArray(dontListInput)
+      ? dontListInput.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+  }
+
+  if (req.body.tags !== undefined) {
+    const tagsInput = parseArrayInput(req.body.tags);
+    tip.tags = Array.isArray(tagsInput)
+      ? tagsInput.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+  }
+
+  if (req.body.estimatedReadMinutes !== undefined) {
+    tip.estimatedReadMinutes =
+      parseIntegerInput(req.body.estimatedReadMinutes) ?? tip.estimatedReadMinutes;
+  }
+
+  tip.coverImageUrl = await resolveImageUrl({
+    req,
+    folder: 'safety-tips/covers',
+    fieldNames: ['coverImage', 'cover', 'coverImageUrl'],
+    bodyValue: req.body.coverImageUrl,
+    currentValue: tip.coverImageUrl
+  });
+
+  tip.thumbnailUrl = await resolveImageUrl({
+    req,
+    folder: 'safety-tips/thumbnails',
+    fieldNames: ['thumbnail', 'thumbnailImage', 'thumbnailUrl'],
+    bodyValue: req.body.thumbnailUrl,
+    currentValue: tip.thumbnailUrl
+  });
+
+  if (req.body.status !== undefined) {
+    tip.status = String(req.body.status).trim();
+  }
+
+  if (req.body.language !== undefined) {
+    tip.language = String(req.body.language).trim();
+  }
+
+  if (req.body.featured !== undefined) {
+    tip.featured = parseBooleanInput(req.body.featured) ?? tip.featured;
+  }
+
+  await tip.save();
+
+  await logActivity({
+    type: 'guide.updated',
+    actorId: req.auth.user._id,
+    title: `Guide updated: ${tip.title}`,
+    description: 'A safety guide was edited from the admin console.'
+  });
+
+  sendSuccess(res, {
+    message: 'Admin safety tip updated successfully',
+    data: {
+      id: tip._id,
+      slug: tip.slug,
+      title: tip.title,
+      category: tip.category,
+      summary: tip.summary,
+      contentSections: tip.contentSections,
+      doList: tip.doList,
+      dontList: tip.dontList,
+      tags: tip.tags,
+      estimatedReadMinutes: tip.estimatedReadMinutes,
+      coverImageUrl: tip.coverImageUrl,
+      thumbnailUrl: tip.thumbnailUrl,
+      status: tip.status,
+      language: tip.language,
+      featured: tip.featured,
+      createdAt: tip.createdAt,
+      updatedAt: tip.updatedAt
+    }
+  });
+});
+
+export const deleteAdminSafetyTip = catchAsync(async (req, res) => {
+  const tip = await SafetyTip.findByIdAndDelete(req.params.tipId);
+
+  if (!tip) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Safety tip not found');
+  }
+
+  await logActivity({
+    type: 'guide.deleted',
+    actorId: req.auth.user._id,
+    title: `Guide deleted: ${tip.title}`,
+    description: 'A safety guide was removed from the admin console.'
+  });
+
+  sendSuccess(res, {
+    message: 'Admin safety tip deleted successfully'
+  });
+});
+
+export const listAdminActivity = catchAsync(async (req, res) => {
+  const items = await Activity.find().sort({ createdAt: -1 }).lean();
+
+  sendSuccess(res, {
+    message: 'Admin activity fetched successfully',
+    data: items.map((item) => ({
+      id: item._id,
+      type: item.type,
+      actorId: item.actorId,
+      title: item.title,
+      description: item.description,
+      createdAt: item.createdAt
+    }))
+  });
+});
