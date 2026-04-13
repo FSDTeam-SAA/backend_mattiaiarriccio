@@ -2,17 +2,21 @@ import { Router } from 'express';
 import { requireAuth } from '../middlewares/auth.js';
 import upload from '../middlewares/upload.js';
 import {
+  createAdminCategory,
   createAdminChecklist,
   createAdminSafetyTip,
+  deleteAdminCategory,
   deleteAdminChecklist,
   deleteAdminSafetyTip,
   getAdminDashboard,
   getAdminSettings,
   getAiPromptConfig,
+  listAdminCategories,
   listAdminActivity,
   listAdminChecklists,
   listAdminSafetyTips,
   patchAiPromptConfig,
+  updateAdminCategory,
   updateAdminChecklist,
   updateAdminSafetyTip,
   updateAdminSettings
@@ -49,6 +53,11 @@ router.patch('/settings', avatarUpload, updateAdminSettings);
 
 router.get('/ai-prompt', getAiPromptConfig);
 router.patch('/ai-prompt', patchAiPromptConfig);
+
+router.get('/categories', listAdminCategories);
+router.post('/categories', createAdminCategory);
+router.patch('/categories/:categoryId', updateAdminCategory);
+router.delete('/categories/:categoryId', deleteAdminCategory);
 
 router.get('/checklists', listAdminChecklists);
 router.post('/checklists', checklistMediaUpload, createAdminChecklist);

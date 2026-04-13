@@ -19,6 +19,8 @@ AI replies are fetched through the live Python backend here:
 
 The Express backend wraps that service through local routes under `/api/v1/chat/*` and `/api/v1/admin/ai-prompt`.
 
+The node backend reads the Python service location from `AI_BACKEND_BASE_URL` in `.env`, so you can switch Render or local URLs without editing code.
+
 ## Multipart image uploads on resource routes
 
 Image-bearing create and update routes now accept `multipart/form-data` directly. Mobile clients do not need to call a separate upload endpoint first when they are already creating or updating one of these resources.
@@ -78,6 +80,7 @@ Notes:
 - User and admin login requests automatically save the access token into collection variables, so the protected folders can be tested right after login.
 - Multipart routes only require attaching files when you want to test uploads.
 - Password reset requests on production may require real OTP delivery.
+- Categories are now managed through admin CRUD and the mobile home payload reads from that shared category library.
 - User registration and profile updates accept a single `username` or `userName` field; legacy `firstName` and `lastName` payloads still work.
 
 ## Environment variables
@@ -115,7 +118,7 @@ Admin account:
 
 `/api/v1/home`
 
-- home screen payload for the mobile dashboard
+- home screen payload for the mobile dashboard, including admin-managed categories
 
 `/api/v1/users`
 
@@ -139,11 +142,11 @@ Admin account:
 
 `/api/v1/chat`
 
-- local conversation history plus AI-backed assistant replies
+- local conversation history plus AI-backed assistant replies, with optional `emergencyType` context for emergency-specific opening messages
 
 `/api/v1/admin`
 
-- dashboard, AI prompt management, checklist CRUD, safety tip CRUD, admin settings, activity feed
+- dashboard, AI prompt management, category CRUD, checklist CRUD, safety tip CRUD, admin settings, activity feed
 
 `/api/v1/uploads`
 

@@ -41,6 +41,7 @@ const run = async () => {
     const homePayload = await homeResponse.json();
     assert(homeResponse.ok, 'Home route failed');
     assert(Array.isArray(homePayload.data?.featuredGuides), 'Home payload missing guides');
+    assert(Array.isArray(homePayload.data?.categories), 'Home payload missing categories');
 
     const checklistsResponse = await fetch(`${baseUrl}/api/v1/checklists`, {
       headers: {
@@ -58,12 +59,17 @@ const run = async () => {
         Authorization: `Bearer ${userToken}`
       },
       body: JSON.stringify({
-        message: 'Give me one short earthquake safety tip.'
+        emergencyType: 'Earthquake',
+        message: 'Give me one short safety tip.'
       })
     });
     const chatPayload = await chatResponse.json();
     assert(chatResponse.ok, 'Chat route failed');
     assert(chatPayload.data?.assistantMessage?.content, 'AI response missing');
+    assert(
+      chatPayload.data?.conversation?.emergencyType === 'Earthquake',
+      'Conversation emergency type missing'
+    );
 
     const adminLoginResponse = await fetch(`${baseUrl}/api/v1/auth/admin/login`, {
       method: 'POST',
@@ -87,6 +93,15 @@ const run = async () => {
     const adminDashboardPayload = await adminDashboardResponse.json();
     assert(adminDashboardResponse.ok, 'Admin dashboard failed');
     assert(adminDashboardPayload.data?.summary?.totalUsers >= 1, 'Admin summary missing');
+
+    const adminCategoriesResponse = await fetch(`${baseUrl}/api/v1/admin/categories`, {
+      headers: {
+        Authorization: `Bearer ${adminToken}`
+      }
+    });
+    const adminCategoriesPayload = await adminCategoriesResponse.json();
+    assert(adminCategoriesResponse.ok, 'Admin categories failed');
+    assert(Array.isArray(adminCategoriesPayload.data), 'Admin category payload missing');
 
     console.log('Smoke test completed successfully');
   } finally {

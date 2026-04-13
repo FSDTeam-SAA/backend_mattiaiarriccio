@@ -10,6 +10,7 @@ import LegalDocument from '../models/legalDocument.model.js';
 import SafetyTip from '../models/safetyTip.model.js';
 import { appConfig } from '../data/appConfig.js';
 import { createId } from '../lib/id.js';
+import { getManagedCategoryNames } from '../services/category.service.js';
 import {
   ensurePasswordStrength,
   ensureConfirmedPassword,
@@ -181,7 +182,15 @@ export const changePassword = catchAsync(async (req, res) => {
 export const getHome = catchAsync(async (req, res) => {
   const userId = req.auth.user._id;
 
-  const [user, checklists, progressEntries, featuredGuides, conversations, unreadNotifications] =
+  const [
+    user,
+    checklists,
+    progressEntries,
+    featuredGuides,
+    conversations,
+    unreadNotifications,
+    categories
+  ] =
     await Promise.all([
       User.findById(userId).lean(),
       Checklist.find({
@@ -199,7 +208,8 @@ export const getHome = catchAsync(async (req, res) => {
         .limit(4)
         .lean(),
       Conversation.find({ userId }).sort({ updatedAt: -1 }).limit(5).lean(),
-      Notification.countDocuments({ userId, read: false })
+      Notification.countDocuments({ userId, read: false }),
+      getManagedCategoryNames()
     ]);
 
   sendSuccess(res, {
@@ -241,7 +251,7 @@ export const getHome = catchAsync(async (req, res) => {
       })),
       checklistSummary: checklistProgressSummary(checklists, progressEntries),
       chatHistoryPreview: conversations.map(conversationSummary),
-      categories: appConfig.emergencyCategories,
+      categories,
       unreadNotifications
     }
   });

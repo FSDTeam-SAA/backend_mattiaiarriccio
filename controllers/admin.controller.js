@@ -2,12 +2,18 @@ import { StatusCodes } from 'http-status-codes';
 import ApiError from '../utils/ApiError.js';
 import catchAsync from '../utils/catchAsync.js';
 import User from '../models/user.model.js';
+import Category from '../models/category.model.js';
 import Checklist from '../models/checklist.model.js';
 import ChecklistProgress from '../models/checklistProgress.model.js';
 import SafetyTip from '../models/safetyTip.model.js';
 import Conversation from '../models/conversation.model.js';
 import Activity from '../models/activity.model.js';
 import { fetchAiPrompt, updateAiPrompt } from '../services/ai.service.js';
+import {
+  listManagedCategories,
+  normalizeCategoryName,
+  resolveManagedCategoryName
+} from '../services/category.service.js';
 import { resolveImageUrl } from '../services/media.service.js';
 import { createSlug } from '../services/security.service.js';
 import { publicUser } from '../utils/serializers.js';
@@ -61,9 +67,104 @@ const normalizeContentSections = (sections = [], fallbackBody = '') => {
   ];
 };
 
+const mapChecklistPayload = (checklist) => ({
+  id: checklist._id,
+  type: checklist.type,
+  title: checklist.title,
+  category: checklist.category,
+  description: checklist.description,
+  iconUrl: checklist.iconUrl,
+  coverImageUrl: checklist.coverImageUrl,
+  status: checklist.status,
+  createdBy: checklist.createdBy,
+  itemCount: checklist.items.length,
+  items: checklist.items.map((item) => ({
+    id: item._id,
+    text: item.text,
+    order: item.order
+  })),
+  createdAt: checklist.createdAt,
+  updatedAt: checklist.updatedAt
+});
+
+const mapSafetyTipPayload = (tip) => ({
+  id: tip._id,
+  slug: tip.slug,
+  title: tip.title,
+  category: tip.category,
+  summary: tip.summary,
+  contentSections: tip.contentSections,
+  doList: tip.doList,
+  dontList: tip.dontList,
+  tags: tip.tags,
+  estimatedReadMinutes: tip.estimatedReadMinutes,
+  coverImageUrl: tip.coverImageUrl,
+  thumbnailUrl: tip.thumbnailUrl,
+  status: tip.status,
+  language: tip.language,
+  featured: tip.featured,
+  createdAt: tip.createdAt,
+  updatedAt: tip.updatedAt
+});
+
+const getCategoryUsageMaps = async () => {
+  const [templateChecklistCounts, safetyTipCounts] = await Promise.all([
+    Checklist.aggregate([
+      {
+        $match: {
+          type: 'template'
+        }
+      },
+      {
+        $group: {
+          _id: '$category',
+          count: { $sum: 1 }
+        }
+      }
+    ]),
+    SafetyTip.aggregate([
+      {
+        $group: {
+          _id: '$category',
+          count: { $sum: 1 }
+        }
+      }
+    ])
+  ]);
+
+  return {
+    checklistCounts: new Map(
+      templateChecklistCounts.map((entry) => [normalizeCategoryName(entry._id), entry.count])
+    ),
+    safetyTipCounts: new Map(
+      safetyTipCounts.map((entry) => [normalizeCategoryName(entry._id), entry.count])
+    )
+  };
+};
+
+const mapCategoryPayload = (category, usageMaps) => {
+  const normalizedName = normalizeCategoryName(category.name);
+  const checklistsCount = usageMaps.checklistCounts.get(normalizedName) || 0;
+  const safetyTipsCount = usageMaps.safetyTipCounts.get(normalizedName) || 0;
+
+  return {
+    id: category._id,
+    name: category.name,
+    slug: category.slug,
+    description: category.description,
+    sortOrder: category.sortOrder,
+    checklistsCount,
+    safetyTipsCount,
+    usageCount: checklistsCount + safetyTipsCount,
+    createdAt: category.createdAt,
+    updatedAt: category.updatedAt
+  };
+};
+
 export const getAdminDashboard = catchAsync(async (req, res) => {
   const [
     totalUsers,
+    totalCategories,
     totalChecklists,
     totalSafetyTips,
     totalChats,
@@ -72,6 +173,7 @@ export const getAdminDashboard = catchAsync(async (req, res) => {
     aiPrompt
   ] = await Promise.all([
     User.countDocuments({ role: 'user' }),
+    listManagedCategories().then((categories) => categories.length),
     Checklist.countDocuments({ type: 'template' }),
     SafetyTip.countDocuments(),
     Conversation.countDocuments(),
@@ -90,6 +192,7 @@ export const getAdminDashboard = catchAsync(async (req, res) => {
     data: {
       summary: {
         totalUsers,
+        totalCategories,
         totalChecklists,
         totalSafetyTips,
         totalChats,
@@ -206,25 +309,7 @@ export const listAdminChecklists = catchAsync(async (req, res) => {
 
   sendSuccess(res, {
     message: 'Admin checklists fetched successfully',
-    data: checklists.map((checklist) => ({
-      id: checklist._id,
-      type: checklist.type,
-      title: checklist.title,
-      category: checklist.category,
-      description: checklist.description,
-      iconUrl: checklist.iconUrl,
-      coverImageUrl: checklist.coverImageUrl,
-      status: checklist.status,
-      createdBy: checklist.createdBy,
-      itemCount: checklist.items.length,
-      items: checklist.items.map((item) => ({
-        id: item._id,
-        text: item.text,
-        order: item.order
-      })),
-      createdAt: checklist.createdAt,
-      updatedAt: checklist.updatedAt
-    }))
+    data: checklists.map(mapChecklistPayload)
   });
 });
 
@@ -256,7 +341,7 @@ export const createAdminChecklist = catchAsync(async (req, res) => {
     type: 'template',
     ownerId: null,
     title,
-    category: String(req.body.category || 'General').trim(),
+    category: await resolveManagedCategoryName(req.body.category),
     description: String(req.body.description || '').trim(),
     iconUrl,
     coverImageUrl,
@@ -275,23 +360,7 @@ export const createAdminChecklist = catchAsync(async (req, res) => {
   sendSuccess(res, {
     statusCode: StatusCodes.CREATED,
     message: 'Admin checklist created successfully',
-    data: {
-      id: checklist._id,
-      title: checklist.title,
-      category: checklist.category,
-      description: checklist.description,
-      iconUrl: checklist.iconUrl,
-      coverImageUrl: checklist.coverImageUrl,
-      status: checklist.status,
-      createdBy: checklist.createdBy,
-      items: checklist.items.map((item) => ({
-        id: item._id,
-        text: item.text,
-        order: item.order
-      })),
-      createdAt: checklist.createdAt,
-      updatedAt: checklist.updatedAt
-    }
+    data: mapChecklistPayload(checklist)
   });
 });
 
@@ -314,7 +383,7 @@ export const updateAdminChecklist = catchAsync(async (req, res) => {
   }
 
   if (req.body.category !== undefined) {
-    checklist.category = String(req.body.category).trim();
+    checklist.category = await resolveManagedCategoryName(req.body.category);
   }
 
   if (req.body.description !== undefined) {
@@ -356,22 +425,7 @@ export const updateAdminChecklist = catchAsync(async (req, res) => {
 
   sendSuccess(res, {
     message: 'Admin checklist updated successfully',
-    data: {
-      id: checklist._id,
-      title: checklist.title,
-      category: checklist.category,
-      description: checklist.description,
-      iconUrl: checklist.iconUrl,
-      coverImageUrl: checklist.coverImageUrl,
-      status: checklist.status,
-      items: checklist.items.map((item) => ({
-        id: item._id,
-        text: item.text,
-        order: item.order
-      })),
-      createdAt: checklist.createdAt,
-      updatedAt: checklist.updatedAt
-    }
+    data: mapChecklistPayload(checklist)
   });
 });
 
@@ -404,25 +458,7 @@ export const listAdminSafetyTips = catchAsync(async (req, res) => {
 
   sendSuccess(res, {
     message: 'Admin safety tips fetched successfully',
-    data: tips.map((tip) => ({
-      id: tip._id,
-      slug: tip.slug,
-      title: tip.title,
-      category: tip.category,
-      summary: tip.summary,
-      contentSections: tip.contentSections,
-      doList: tip.doList,
-      dontList: tip.dontList,
-      tags: tip.tags,
-      estimatedReadMinutes: tip.estimatedReadMinutes,
-      coverImageUrl: tip.coverImageUrl,
-      thumbnailUrl: tip.thumbnailUrl,
-      status: tip.status,
-      language: tip.language,
-      featured: tip.featured,
-      createdAt: tip.createdAt,
-      updatedAt: tip.updatedAt
-    }))
+    data: tips.map(mapSafetyTipPayload)
   });
 });
 
@@ -458,7 +494,7 @@ export const createAdminSafetyTip = catchAsync(async (req, res) => {
     _id: createId('tip'),
     slug: createSlug(title),
     title,
-    category: String(req.body.category || 'General').trim(),
+    category: await resolveManagedCategoryName(req.body.category),
     summary: String(req.body.summary || '').trim(),
     contentSections: normalizeContentSections(
       contentSectionsInput,
@@ -491,25 +527,7 @@ export const createAdminSafetyTip = catchAsync(async (req, res) => {
   sendSuccess(res, {
     statusCode: StatusCodes.CREATED,
     message: 'Admin safety tip created successfully',
-    data: {
-      id: tip._id,
-      slug: tip.slug,
-      title: tip.title,
-      category: tip.category,
-      summary: tip.summary,
-      contentSections: tip.contentSections,
-      doList: tip.doList,
-      dontList: tip.dontList,
-      tags: tip.tags,
-      estimatedReadMinutes: tip.estimatedReadMinutes,
-      coverImageUrl: tip.coverImageUrl,
-      thumbnailUrl: tip.thumbnailUrl,
-      status: tip.status,
-      language: tip.language,
-      featured: tip.featured,
-      createdAt: tip.createdAt,
-      updatedAt: tip.updatedAt
-    }
+    data: mapSafetyTipPayload(tip)
   });
 });
 
@@ -530,7 +548,7 @@ export const updateAdminSafetyTip = catchAsync(async (req, res) => {
   }
 
   if (req.body.category !== undefined) {
-    tip.category = String(req.body.category).trim();
+    tip.category = await resolveManagedCategoryName(req.body.category);
   }
 
   if (req.body.summary !== undefined) {
@@ -613,25 +631,194 @@ export const updateAdminSafetyTip = catchAsync(async (req, res) => {
 
   sendSuccess(res, {
     message: 'Admin safety tip updated successfully',
-    data: {
-      id: tip._id,
-      slug: tip.slug,
-      title: tip.title,
-      category: tip.category,
-      summary: tip.summary,
-      contentSections: tip.contentSections,
-      doList: tip.doList,
-      dontList: tip.dontList,
-      tags: tip.tags,
-      estimatedReadMinutes: tip.estimatedReadMinutes,
-      coverImageUrl: tip.coverImageUrl,
-      thumbnailUrl: tip.thumbnailUrl,
-      status: tip.status,
-      language: tip.language,
-      featured: tip.featured,
-      createdAt: tip.createdAt,
-      updatedAt: tip.updatedAt
+    data: mapSafetyTipPayload(tip)
+  });
+});
+
+export const listAdminCategories = catchAsync(async (req, res) => {
+  const [categories, usageMaps] = await Promise.all([
+    listManagedCategories(),
+    getCategoryUsageMaps()
+  ]);
+
+  sendSuccess(res, {
+    message: 'Admin categories fetched successfully',
+    data: categories.map((category) => mapCategoryPayload(category, usageMaps))
+  });
+});
+
+export const createAdminCategory = catchAsync(async (req, res) => {
+  const name = normalizeCategoryName(req.body.name);
+
+  if (!name) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'name is required');
+  }
+
+  const slug = createSlug(name);
+
+  if (!slug) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'name must include letters or numbers');
+  }
+
+  await listManagedCategories();
+
+  const existingCategory = await Category.findOne({ slug }).lean();
+
+  if (existingCategory) {
+    throw new ApiError(StatusCodes.CONFLICT, 'A category with this name already exists');
+  }
+
+  const lastCategory = await Category.findOne().sort({ sortOrder: -1, createdAt: -1 }).lean();
+  const requestedSortOrder = parseIntegerInput(req.body.sortOrder);
+
+  const category = await Category.create({
+    name,
+    slug,
+    description: String(req.body.description || '').trim(),
+    sortOrder: requestedSortOrder ?? (lastCategory?.sortOrder || 0) + 1,
+    createdBy: req.auth.user._id,
+    updatedBy: req.auth.user._id
+  });
+
+  await logActivity({
+    type: 'category.created',
+    actorId: req.auth.user._id,
+    title: `Category created: ${category.name}`,
+    description: 'A new content category was added from the admin console.'
+  });
+
+  sendSuccess(res, {
+    statusCode: StatusCodes.CREATED,
+    message: 'Admin category created successfully',
+    data: mapCategoryPayload(category.toObject(), {
+      checklistCounts: new Map(),
+      safetyTipCounts: new Map()
+    })
+  });
+});
+
+export const updateAdminCategory = catchAsync(async (req, res) => {
+  const category = await Category.findById(req.params.categoryId);
+
+  if (!category) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Category not found');
+  }
+
+  const previousName = category.name;
+
+  if (req.body.name !== undefined) {
+    const name = normalizeCategoryName(req.body.name);
+
+    if (!name) {
+      throw new ApiError(StatusCodes.BAD_REQUEST, 'name cannot be empty');
     }
+
+    const slug = createSlug(name);
+
+    if (!slug) {
+      throw new ApiError(StatusCodes.BAD_REQUEST, 'name must include letters or numbers');
+    }
+
+    const conflictingCategory = await Category.findOne({
+      slug,
+      _id: { $ne: category._id }
+    }).lean();
+
+    if (conflictingCategory) {
+      throw new ApiError(StatusCodes.CONFLICT, 'A category with this name already exists');
+    }
+
+    category.name = name;
+    category.slug = slug;
+  }
+
+  if (req.body.description !== undefined) {
+    category.description = String(req.body.description).trim();
+  }
+
+  if (req.body.sortOrder !== undefined) {
+    category.sortOrder = parseIntegerInput(req.body.sortOrder) ?? category.sortOrder;
+  }
+
+  category.updatedBy = req.auth.user._id;
+  await category.save();
+
+  if (category.name !== previousName) {
+    await Promise.all([
+      Checklist.updateMany(
+        {
+          type: 'template',
+          category: previousName
+        },
+        {
+          $set: {
+            category: category.name
+          }
+        }
+      ),
+      SafetyTip.updateMany(
+        {
+          category: previousName
+        },
+        {
+          $set: {
+            category: category.name
+          }
+        }
+      )
+    ]);
+  }
+
+  await logActivity({
+    type: 'category.updated',
+    actorId: req.auth.user._id,
+    title: `Category updated: ${category.name}`,
+    description: 'A content category was updated from the admin console.'
+  });
+
+  const usageMaps = await getCategoryUsageMaps();
+
+  sendSuccess(res, {
+    message: 'Admin category updated successfully',
+    data: mapCategoryPayload(category.toObject(), usageMaps)
+  });
+});
+
+export const deleteAdminCategory = catchAsync(async (req, res) => {
+  const category = await Category.findById(req.params.categoryId);
+
+  if (!category) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Category not found');
+  }
+
+  const [templateChecklistCount, safetyTipCount] = await Promise.all([
+    Checklist.countDocuments({
+      type: 'template',
+      category: category.name
+    }),
+    SafetyTip.countDocuments({
+      category: category.name
+    })
+  ]);
+
+  if (templateChecklistCount > 0 || safetyTipCount > 0) {
+    throw new ApiError(
+      StatusCodes.CONFLICT,
+      'This category is still used by checklists or safety tips. Reassign that content first'
+    );
+  }
+
+  await Category.deleteOne({ _id: category._id });
+
+  await logActivity({
+    type: 'category.deleted',
+    actorId: req.auth.user._id,
+    title: `Category deleted: ${category.name}`,
+    description: 'An unused content category was removed from the admin console.'
+  });
+
+  sendSuccess(res, {
+    message: 'Admin category deleted successfully'
   });
 });
 

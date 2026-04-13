@@ -8,6 +8,7 @@ import LegalDocument from '../models/legalDocument.model.js';
 import Activity from '../models/activity.model.js';
 import { buildSeedData } from '../data/seed.js';
 import { hashPassword } from './security.service.js';
+import { syncManagedCategoriesFromContentIfEmpty } from './category.service.js';
 
 export const seedDatabase = async () => {
   const existingUsers = await User.countDocuments();
@@ -29,6 +30,7 @@ export const seedDatabase = async () => {
   await Notification.insertMany(seed.notifications);
   await SafetyTip.insertMany(seed.safetyTips);
   await Checklist.insertMany(seed.checklists);
+  await syncManagedCategoriesFromContentIfEmpty();
   await ChecklistProgress.insertMany(seed.checklistProgress);
   await Conversation.insertMany(seed.conversations);
   await LegalDocument.insertMany(seed.legalDocuments);

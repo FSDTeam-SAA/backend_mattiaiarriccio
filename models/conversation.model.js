@@ -42,6 +42,11 @@ const conversationSchema = new mongoose.Schema(
       required: true,
       trim: true
     },
+    emergencyType: {
+      type: String,
+      default: '',
+      trim: true
+    },
     messages: {
       type: [conversationMessageSchema],
       default: []

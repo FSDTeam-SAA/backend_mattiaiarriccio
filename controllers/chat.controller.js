@@ -10,6 +10,7 @@ import { createId } from '../lib/id.js';
 const summarizeConversation = (conversation) => ({
   id: conversation._id,
   title: conversation.title,
+  emergencyType: conversation.emergencyType || '',
   messageCount: conversation.messages.length,
   lastMessagePreview:
     conversation.messages[conversation.messages.length - 1]?.content || '',
@@ -21,6 +22,7 @@ const serializeConversation = (conversation) => ({
   id: conversation._id,
   title: conversation.title,
   userId: conversation.userId,
+  emergencyType: conversation.emergencyType || '',
   createdAt: conversation.createdAt,
   updatedAt: conversation.updatedAt,
   messages: conversation.messages.map((message) => ({
@@ -31,18 +33,57 @@ const serializeConversation = (conversation) => ({
   }))
 });
 
-const buildAiQuery = (conversation, latestMessage) => {
+const normalizeEmergencyType = (value) =>
+  String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+
+const buildEmergencyAwareMessage = (message, emergencyType) => {
+  const trimmedMessage = String(message || '').trim();
+
+  if (trimmedMessage) {
+    return trimmedMessage;
+  }
+
+  if (!emergencyType) {
+    return '';
+  }
+
+  return `Help me with a ${emergencyType} emergency. Start with the most important immediate actions.`;
+};
+
+const buildAiQuery = ({ conversation, latestMessage, emergencyType, isNewConversation }) => {
   const history = conversation?.messages?.slice(-6) || [];
+  const selectedEmergencyType = normalizeEmergencyType(
+    emergencyType || conversation?.emergencyType
+  );
+  const emergencyContext = selectedEmergencyType
+    ? [
+        `Selected emergency type: ${selectedEmergencyType}.`,
+        isNewConversation
+          ? 'This is the first assistant response in the conversation. Do not start with a generic greeting. Start with situation-specific emergency guidance immediately.'
+          : 'Keep the response aligned with this emergency type unless the user clearly changes topics.'
+      ].join('\n')
+    : '';
 
   if (history.length === 0) {
-    return latestMessage;
+    return [emergencyContext, `Latest user request:\n${latestMessage}`]
+      .filter(Boolean)
+      .join('\n\n');
   }
 
   const formattedHistory = history
     .map((message) => `${message.role === 'assistant' ? 'Assistant' : 'User'}: ${message.content}`)
     .join('\n');
 
-  return `Use the recent emergency conversation context below if it is relevant.\n${formattedHistory}\n\nLatest user request:\n${latestMessage}`;
+  return [
+    emergencyContext,
+    'Use the recent emergency conversation context below if it is relevant.',
+    formattedHistory,
+    `Latest user request:\n${latestMessage}`
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 };
 
 export const listConversations = catchAsync(async (req, res) => {
@@ -76,11 +117,15 @@ export const getConversationById = catchAsync(async (req, res) => {
 });
 
 export const sendChatMessage = catchAsync(async (req, res) => {
-  const message = String(req.body.message || '').trim();
+  const emergencyType = normalizeEmergencyType(req.body.emergencyType);
+  const message = buildEmergencyAwareMessage(req.body.message, emergencyType);
   const requestedConversationId = String(req.body.conversationId || '').trim();
 
   if (!message) {
-    throw new ApiError(StatusCodes.BAD_REQUEST, 'message is required');
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'message is required unless emergencyType is provided'
+    );
   }
 
   let conversation = requestedConversationId
@@ -96,16 +141,27 @@ export const sendChatMessage = catchAsync(async (req, res) => {
 
   const aiResponse = await requestAiReply({
     userId: req.auth.user._id,
-    query: buildAiQuery(conversation?.toObject(), message)
+    query: buildAiQuery({
+      conversation: conversation?.toObject(),
+      latestMessage: message,
+      emergencyType,
+      isNewConversation: !conversation
+    })
   });
 
   if (!conversation) {
     conversation = await Conversation.create({
       _id: createId('conv'),
       userId: req.auth.user._id,
-      title: summarizeText(message, 42),
+      title: summarizeText(
+        emergencyType ? `${emergencyType} emergency` : message,
+        42
+      ),
+      emergencyType,
       messages: []
     });
+  } else if (emergencyType) {
+    conversation.emergencyType = emergencyType;
   }
 
   const userMessage = {

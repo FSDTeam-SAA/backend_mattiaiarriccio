@@ -10,6 +10,8 @@
     { "key": "userPassword", "value": "Password123!", "type": "string" },
     { "key": "adminEmail", "value": "admin@wesafe.app", "type": "string" },
     { "key": "adminPassword", "value": "Admin123!", "type": "string" },
+    { "key": "adminCategoryName", "value": "Heatwave", "type": "string" },
+    { "key": "adminCategoryId", "value": "", "type": "string" },
     { "key": "newUserFirstName", "value": "Amina", "type": "string" },
     { "key": "newUserLastName", "value": "Rahman", "type": "string" },
     { "key": "newUserEmail", "value": "amina.rahman@example.com", "type": "string" },
@@ -777,11 +779,11 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"message\": \"What should I do first during an earthquake at home?\"\n}",
+              "raw": "{\n  \"emergencyType\": \"Earthquake\",\n  \"message\": \"What should I do first at home?\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": "{{baseUrl}}/api/v1/chat/messages",
-            "description": "Sends a message to the hosted AI backend and creates a new local conversation when no conversationId is supplied."
+            "description": "Sends a message plus optional emergencyType to the hosted AI backend and creates a new local conversation when no conversationId is supplied. The first AI answer is steered toward the selected emergency type."
           }
         },
         {
@@ -807,11 +809,11 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"conversationId\": \"{{conversationId}}\",\n  \"message\": \"Now give me a short safety checklist I can follow.\"\n}",
+              "raw": "{\n  \"conversationId\": \"{{conversationId}}\",\n  \"emergencyType\": \"Earthquake\",\n  \"message\": \"Now give me a short safety checklist I can follow.\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": "{{baseUrl}}/api/v1/chat/messages",
-            "description": "Sends a follow-up message into an existing conversation."
+            "description": "Sends a follow-up message into an existing conversation. emergencyType is optional and can reinforce or update the current emergency context."
           }
         },
         {
@@ -895,6 +897,70 @@
           }
         },
         {
+          "name": "List Admin Categories",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/categories",
+            "description": "Lists dashboard-managed categories with usage counts."
+          }
+        },
+        {
+          "name": "Create Admin Category",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.id) pm.collectionVariables.set('adminCategoryId', json.data.id);",
+                  "if (json?.data?.name) pm.collectionVariables.set('adminCategoryName', json.data.name);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{adminCategoryName}}\",\n  \"description\": \"Heat emergency guidance and readiness content.\",\n  \"sortOrder\": 20\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/admin/categories",
+            "description": "Creates a category and saves adminCategoryId plus adminCategoryName for later checklist and safety-tip requests."
+          }
+        },
+        {
+          "name": "Update Admin Category",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{adminCategoryName}}\",\n  \"description\": \"Updated category description.\",\n  \"sortOrder\": 21\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/admin/categories/{{adminCategoryId}}",
+            "description": "Updates category metadata. Renaming a category cascades to template checklists and safety tips."
+          }
+        },
+        {
+          "name": "Delete Admin Category",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/admin/categories/{{adminCategoryId}}",
+            "description": "Deletes an unused category. This returns a conflict until checklist and safety-tip content is reassigned or removed."
+          }
+        },
+        {
           "name": "List Admin Checklists",
           "request": {
             "method": "GET",
@@ -927,7 +993,7 @@
               "mode": "formdata",
               "formdata": [
                 { "key": "title", "value": "Heatwave readiness", "type": "text" },
-                { "key": "category", "value": "Heatwave", "type": "text" },
+                { "key": "category", "value": "{{adminCategoryName}}", "type": "text" },
                 { "key": "description", "value": "Help users prepare their homes and supplies for extreme heat.", "type": "text" },
                 { "key": "status", "value": "published", "type": "text" },
                 { "key": "items", "value": "[{\"text\":\"Store clean drinking water\",\"order\":1},{\"text\":\"Review cooling centers nearby\",\"order\":2}]", "type": "text" },
@@ -950,7 +1016,7 @@
               "mode": "formdata",
               "formdata": [
                 { "key": "title", "value": "Heatwave readiness updated", "type": "text" },
-                { "key": "category", "value": "Heatwave", "type": "text" },
+                { "key": "category", "value": "{{adminCategoryName}}", "type": "text" },
                 { "key": "description", "value": "Updated heatwave checklist description.", "type": "text" },
                 { "key": "status", "value": "draft", "type": "text" },
                 { "key": "items", "value": "[{\"id\":\"{{adminChecklistItemId}}\",\"text\":\"Store clean drinking water\",\"order\":1},{\"text\":\"Know how to cool one safe room\",\"order\":2}]", "type": "text" },
@@ -1003,7 +1069,7 @@
               "mode": "formdata",
               "formdata": [
                 { "key": "title", "value": "Cyclone shelter checklist", "type": "text" },
-                { "key": "category", "value": "Cyclone", "type": "text" },
+                { "key": "category", "value": "{{adminCategoryName}}", "type": "text" },
                 { "key": "summary", "value": "Prepare evacuation items and shelter transport before a cyclone warning escalates.", "type": "text" },
                 { "key": "contentSections", "value": "[{\"heading\":\"Before leaving\",\"body\":\"Carry documents, emergency medicine, water, and keep one contact informed.\"},{\"heading\":\"At the shelter\",\"body\":\"Stay with your family group and follow local responder instructions.\"}]", "type": "text" },
                 { "key": "doList", "value": "[\"Carry water\",\"Charge your phone\"]", "type": "text" },
@@ -1032,7 +1098,7 @@
               "mode": "formdata",
               "formdata": [
                 { "key": "title", "value": "Cyclone shelter checklist updated", "type": "text" },
-                { "key": "category", "value": "Cyclone", "type": "text" },
+                { "key": "category", "value": "{{adminCategoryName}}", "type": "text" },
                 { "key": "summary", "value": "Updated guide summary.", "type": "text" },
                 { "key": "contentSections", "value": "[{\"heading\":\"Before leaving\",\"body\":\"Carry medicine, water, documents, and a charged light source.\"}]", "type": "text" },
                 { "key": "doList", "value": "[\"Carry medicine\",\"Keep shoes ready\"]", "type": "text" },
