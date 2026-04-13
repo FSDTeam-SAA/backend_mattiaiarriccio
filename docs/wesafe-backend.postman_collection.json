@@ -1,11 +1,11 @@
 {
   "info": {
     "name": "We Safe Backend API",
-    "description": "# We Safe Backend API\n\nImport this collection into Postman.\n\nCollection variables included:\n- `baseUrl`\n- `userEmail`, `userPassword`\n- `adminEmail`, `adminPassword`\n- `userAccessToken`, `adminAccessToken`\n- reset tokens and resource ids used by follow-up requests\n\nSeed accounts:\n- User: `madiha.aroa@example.com / Password123!`\n- Admin: `admin@wesafe.app / Admin123!`\n\nThe backend also proxies AI prompt and chat requests to the hosted Python service documented at `https://mattiaiaricco-ai-chatbot.onrender.com/docs`.",
+    "description": "# We Safe Backend API\n\nImport this collection into Postman.\n\nHosted base URL:\n- `https://backend-mattiaiarriccio.onrender.com`\n\nCollection variables included:\n- `baseUrl`\n- `userEmail`, `userPassword`\n- `adminEmail`, `adminPassword`\n- `userAccessToken`, `adminAccessToken`\n- reset tokens and resource ids used by follow-up requests\n\nSeed accounts:\n- User: `madiha.aroa@example.com / Password123!`\n- Admin: `admin@wesafe.app / Admin123!`\n\nRecommended test order:\n1. Run `System & Docs / Health Check`.\n2. Run `Auth - User / Login User`; the collection automatically saves `userAccessToken` and `userId`.\n3. Test the `User App`, `Safety Tips`, `Checklists`, and `Chat` folders.\n4. Run `Auth - Admin / Login Admin`; the collection automatically saves `adminAccessToken` and `adminId`.\n5. Test the `Admin` and `Uploads` folders.\n\nNotes:\n- The first Render request can take 30 to 60 seconds if the service is waking up.\n- Multipart routes only need a file attached when you want to test uploads.\n- Password reset requests on production may require a real OTP delivery flow, so skip them if email delivery is not configured.\n\nThe backend also proxies AI prompt and chat requests to the hosted Python service documented at `https://mattiaiaricco-ai-chatbot.onrender.com/docs`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl", "value": "http://localhost:5000", "type": "string" },
+    { "key": "baseUrl", "value": "https://backend-mattiaiarriccio.onrender.com", "type": "string" },
     { "key": "userEmail", "value": "madiha.aroa@example.com", "type": "string" },
     { "key": "userPassword", "value": "Password123!", "type": "string" },
     { "key": "adminEmail", "value": "admin@wesafe.app", "type": "string" },
