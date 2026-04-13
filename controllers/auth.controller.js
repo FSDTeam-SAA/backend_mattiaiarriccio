@@ -24,6 +24,19 @@ import { resolveImageUrl } from '../services/media.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { publicUser } from '../utils/serializers.js';
 
+const pickFirstDefined = (body, keys) => {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) {
+      return String(body[key] || '').trim();
+    }
+  }
+
+  return '';
+};
+
+const resolveUserName = (body = {}) =>
+  pickFirstDefined(body, ['username', 'userName', 'fullName', 'firstName']);
+
 const normalizeName = (firstName, lastName) =>
   `${String(firstName || '').trim()} ${String(lastName || '').trim()}`.trim();
 
@@ -61,7 +74,7 @@ const createPasswordResetRequest = async (user) => {
 };
 
 export const register = catchAsync(async (req, res) => {
-  const firstName = String(req.body.firstName || '').trim();
+  const firstName = resolveUserName(req.body);
   const lastName = String(req.body.lastName || '').trim();
   const phoneNumber = String(req.body.phoneNumber || '').trim();
   const preferredLanguage = String(req.body.preferredLanguage || 'en').trim();
@@ -70,7 +83,7 @@ export const register = catchAsync(async (req, res) => {
   const confirmPassword = String(req.body.confirmPassword || '');
 
   if (!firstName) {
-    throw new ApiError(StatusCodes.BAD_REQUEST, 'First name is required');
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Username is required');
   }
 
   ensureConfirmedPassword(password, confirmPassword);

@@ -99,7 +99,7 @@
             "body": {
               "mode": "formdata",
               "formdata": [
-                { "key": "firstName", "value": "{{newUserFirstName}}", "type": "text" },
+                { "key": "username", "value": "{{newUserFirstName}}", "type": "text" },
                 { "key": "lastName", "value": "{{newUserLastName}}", "type": "text" },
                 { "key": "phoneNumber", "value": "{{newUserPhoneNumber}}", "type": "text" },
                 { "key": "preferredLanguage", "value": "en", "type": "text" },
@@ -110,7 +110,7 @@
               ]
             },
             "url": "{{baseUrl}}/api/v1/auth/register",
-            "description": "Creates a mobile user account and returns an access token. Upload avatar with multipart/form-data using the avatar file field."
+            "description": "Creates a mobile user account and returns an access token. Accepts a single username or userName field. Upload avatar with multipart/form-data using the avatar file field."
           }
         },
         {
@@ -433,14 +433,14 @@
             "body": {
               "mode": "formdata",
               "formdata": [
-                { "key": "firstName", "value": "Madiha", "type": "text" },
+                { "key": "username", "value": "Madiha", "type": "text" },
                 { "key": "lastName", "value": "Aroa", "type": "text" },
                 { "key": "phoneNumber", "value": "+8801700000000", "type": "text" },
                 { "key": "avatar", "type": "file", "src": [] }
               ]
             },
             "url": "{{baseUrl}}/api/v1/users/me",
-            "description": "Updates editable user profile fields. Upload avatar with multipart/form-data using the avatar file field."
+            "description": "Updates editable user profile fields. Accepts a single username or userName field. Upload avatar with multipart/form-data using the avatar file field."
           }
         },
         {

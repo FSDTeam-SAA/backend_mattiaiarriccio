@@ -6,6 +6,8 @@ export const publicUser = (user) => {
   return {
     id: user._id,
     role: user.role,
+    username: user.firstName,
+    userName: user.firstName,
     firstName: user.firstName,
     lastName: user.lastName,
     fullName: user.fullName,

@@ -20,6 +20,19 @@ import { resolveImageUrl } from '../services/media.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { publicUser } from '../utils/serializers.js';
 
+const getProvidedUserName = (body = {}) => {
+  for (const key of ['username', 'userName', 'fullName', 'firstName']) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) {
+      return String(body[key] || '').trim();
+    }
+  }
+
+  return undefined;
+};
+
+const normalizeName = (firstName, lastName) =>
+  `${String(firstName || '').trim()} ${String(lastName || '').trim()}`.trim();
+
 const checklistProgressSummary = (checklists, progressEntries) => {
   const progressMap = new Map(progressEntries.map((entry) => [entry.checklistId, entry]));
 
@@ -59,14 +72,18 @@ export const updateCurrentUser = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.NOT_FOUND, 'User not found');
   }
 
-  const nextFirstName =
-    req.body.firstName !== undefined ? String(req.body.firstName).trim() : user.firstName;
+  const providedUserName = getProvidedUserName(req.body);
+  const nextFirstName = providedUserName !== undefined ? providedUserName : user.firstName;
   const nextLastName =
     req.body.lastName !== undefined ? String(req.body.lastName).trim() : user.lastName;
 
+  if (!nextFirstName) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Username is required');
+  }
+
   user.firstName = nextFirstName;
   user.lastName = nextLastName;
-  user.fullName = `${nextFirstName} ${nextLastName}`.trim();
+  user.fullName = normalizeName(nextFirstName, nextLastName);
 
   if (req.body.phoneNumber !== undefined) {
     user.phoneNumber = String(req.body.phoneNumber).trim();

@@ -21,13 +21,14 @@ export const apiCatalog = {
     'All authenticated routes expect a Bearer token returned by login or registration.',
     'This backend proxies AI answers from the hosted Python service at the URL above.',
     'Password reset OTP responses include a debug OTP outside production so the mobile team can complete the flow without email infrastructure.',
+    'User registration and profile updates accept a single `username` or `userName` field; legacy `firstName` and `lastName` payloads still work.',
     'Image-bearing create/update endpoints accept multipart/form-data directly. When multipart also includes arrays such as items or contentSections, send those structured fields as JSON strings.'
   ],
   groups: [
     {
       name: 'Auth',
       routes: [
-        { method: 'POST', path: '/auth/register', description: 'Create a user account and return an access token. Supports multipart avatar upload via field `avatar`.' },
+        { method: 'POST', path: '/auth/register', description: 'Create a user account and return an access token. Accepts a single `username` or `userName` field and supports multipart avatar upload via field `avatar`.' },
         { method: 'POST', path: '/auth/login', description: 'User email/password login.' },
         { method: 'POST', path: '/auth/admin/login', description: 'Admin email/password login.' },
         { method: 'POST', path: '/auth/social-login', description: 'Issue a local session after client-side provider sign-in. Supports multipart avatar upload via field `avatar`.' },
@@ -42,7 +43,7 @@ export const apiCatalog = {
       routes: [
         { method: 'GET', path: '/home', description: 'Home screen payload: cards, featured guides, checklist summary, and recent chats.' },
         { method: 'GET', path: '/users/me', description: 'Current user profile.' },
-        { method: 'PATCH', path: '/users/me', description: 'Update profile fields shown in the mobile settings flow. Supports multipart avatar upload via field `avatar`.' },
+        { method: 'PATCH', path: '/users/me', description: 'Update profile fields shown in the mobile settings flow. Accepts a single `username` or `userName` field and supports multipart avatar upload via field `avatar`.' },
         { method: 'GET', path: '/users/me/preferences', description: 'Get language and notification preferences.' },
         { method: 'PATCH', path: '/users/me/preferences', description: 'Update preferred language, notifications, and onboarding flag.' },
         { method: 'PATCH', path: '/users/me/password', description: 'Change password while authenticated.' },

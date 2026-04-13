@@ -78,6 +78,7 @@ Notes:
 - User and admin login requests automatically save the access token into collection variables, so the protected folders can be tested right after login.
 - Multipart routes only require attaching files when you want to test uploads.
 - Password reset requests on production may require real OTP delivery.
+- User registration and profile updates accept a single `username` or `userName` field; legacy `firstName` and `lastName` payloads still work.
 
 ## Environment variables
 
@@ -151,6 +152,8 @@ Admin account:
 ## Password reset behavior
 
 Because no email provider is configured in this repo, OTP responses include `debugOtp` outside production. That lets the mobile developer complete the forgot-password flow immediately.
+
+`nodemailer` is not configured in this backend yet, so reset OTP delivery is still API/debug-token based unless a mail provider is added.
 
 ## Smoke test
 
