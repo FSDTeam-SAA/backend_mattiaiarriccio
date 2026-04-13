@@ -2,6 +2,7 @@ import { StatusCodes } from 'http-status-codes';
 import ApiError from '../utils/ApiError.js';
 import catchAsync from '../utils/catchAsync.js';
 import SafetyTip from '../models/safetyTip.model.js';
+import { getManagedCategoryNames } from '../services/category.service.js';
 import { paginate, parsePagination, sendSuccess } from '../utils/response.js';
 
 const mapSafetyTipCard = (tip) => ({
@@ -29,7 +30,10 @@ export const listSafetyTips = catchAsync(async (req, res) => {
   const category = String(req.query.category || '').trim();
   const featuredOnly = String(req.query.featured || '').trim().toLowerCase() === 'true';
 
-  const allTips = await SafetyTip.find({ status: 'published' }).sort({ updatedAt: -1 }).lean();
+  const [allTips, managedCategories] = await Promise.all([
+    SafetyTip.find({ status: 'published' }).sort({ updatedAt: -1 }).lean(),
+    getManagedCategoryNames()
+  ]);
 
   let tips = allTips;
 
@@ -57,7 +61,9 @@ export const listSafetyTips = catchAsync(async (req, res) => {
     data: paged.items,
     meta: {
       ...paged.meta,
-      categories: [...new Set(allTips.map((tip) => tip.category))].sort()
+      categories: managedCategories.length
+        ? managedCategories
+        : [...new Set(allTips.map((tip) => tip.category))].sort()
     }
   });
 });

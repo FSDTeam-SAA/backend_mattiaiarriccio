@@ -1,9 +1,21 @@
 import { StatusCodes } from 'http-status-codes';
 import ApiError from '../utils/ApiError.js';
 
-const AI_BACKEND_BASE_URL =
-  process.env.AI_BACKEND_BASE_URL || 'https://mattiaiaricco-ai-chatbot.onrender.com';
+const AI_BACKEND_BASE_URL = String(process.env.AI_BACKEND_BASE_URL || '')
+  .trim()
+  .replace(/\/+$/, '');
 const AI_TIMEOUT_MS = Number.parseInt(process.env.AI_TIMEOUT_MS || '30000', 10);
+
+const getAiBackendBaseUrl = () => {
+  if (!AI_BACKEND_BASE_URL) {
+    throw new ApiError(
+      StatusCodes.INTERNAL_SERVER_ERROR,
+      'AI_BACKEND_BASE_URL is not configured'
+    );
+  }
+
+  return AI_BACKEND_BASE_URL;
+};
 
 const fetchJson = async (url, options = {}) => {
   const controller = new AbortController();
@@ -37,17 +49,18 @@ const fetchJson = async (url, options = {}) => {
 };
 
 export const getAiServiceInfo = () => ({
-  baseUrl: AI_BACKEND_BASE_URL,
-  docsUrl: `${AI_BACKEND_BASE_URL}/docs`
+  baseUrl: AI_BACKEND_BASE_URL || null,
+  docsUrl: AI_BACKEND_BASE_URL ? `${AI_BACKEND_BASE_URL}/docs` : null
 });
 
 export const requestAiReply = async ({ userId, query }) => {
+  const aiBaseUrl = getAiBackendBaseUrl();
   const body = new URLSearchParams({
     user_id: userId,
     query
   });
 
-  const response = await fetchJson(`${AI_BACKEND_BASE_URL}/api/chat/`, {
+  const response = await fetchJson(`${aiBaseUrl}/api/chat/`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded'
@@ -62,7 +75,8 @@ export const requestAiReply = async ({ userId, query }) => {
 };
 
 export const fetchAiPrompt = async () => {
-  const response = await fetchJson(`${AI_BACKEND_BASE_URL}/admin/prompt`);
+  const aiBaseUrl = getAiBackendBaseUrl();
+  const response = await fetchJson(`${aiBaseUrl}/admin/prompt`);
 
   return {
     welcomeMessage: response.welcome_message || response.welcome_instruction || '',
@@ -77,6 +91,7 @@ export const updateAiPrompt = async ({
   systemInstruction,
   fallbackMessage
 }) => {
+  const aiBaseUrl = getAiBackendBaseUrl();
   const body = new URLSearchParams();
 
   if (welcomeMessage !== undefined) {
@@ -91,7 +106,7 @@ export const updateAiPrompt = async ({
     body.set('fallback_message', fallbackMessage);
   }
 
-  const response = await fetchJson(`${AI_BACKEND_BASE_URL}/admin/prompt`, {
+  const response = await fetchJson(`${aiBaseUrl}/admin/prompt`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded'

@@ -4,6 +4,7 @@ import catchAsync from '../utils/catchAsync.js';
 import Checklist from '../models/checklist.model.js';
 import ChecklistProgress from '../models/checklistProgress.model.js';
 import { createId } from '../lib/id.js';
+import { getManagedCategoryNames } from '../services/category.service.js';
 import { resolveImageUrl } from '../services/media.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { parseArrayInput } from '../utils/requestParsers.js';
@@ -115,8 +116,14 @@ export const listChecklists = catchAsync(async (req, res) => {
     );
   }
 
-  const progressEntries = await ChecklistProgress.find({ userId }).lean();
+  const [progressEntries, managedCategories] = await Promise.all([
+    ChecklistProgress.find({ userId }).lean(),
+    getManagedCategoryNames()
+  ]);
   const progressMap = new Map(progressEntries.map((entry) => [entry.checklistId, entry]));
+  const categories = [...new Set([...managedCategories, ...checklists.map((item) => item.category)])]
+    .filter(Boolean)
+    .sort();
 
   sendSuccess(res, {
     message: 'Checklists fetched successfully',
@@ -124,7 +131,7 @@ export const listChecklists = catchAsync(async (req, res) => {
       formatChecklist(checklist, progressMap.get(checklist._id))
     ),
     meta: {
-      categories: [...new Set(checklists.map((checklist) => checklist.category))].sort()
+      categories
     }
   });
 });

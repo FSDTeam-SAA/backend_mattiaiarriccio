@@ -20,7 +20,9 @@ export const apiCatalog = {
   notes: [
     'All authenticated routes expect a Bearer token returned by login or registration.',
     'This backend proxies AI answers from the hosted Python service at the URL above.',
+    'AI chat and admin prompt routes read the Python service location from `AI_BACKEND_BASE_URL` in the node `.env` file.',
     'Password reset OTP responses include a debug OTP outside production so the mobile team can complete the flow without email infrastructure.',
+    'Categories are managed from admin CRUD and power the category lists returned by the home and content endpoints.',
     'User registration and profile updates accept a single `username` or `userName` field; legacy `firstName` and `lastName` payloads still work.',
     'Image-bearing create/update endpoints accept multipart/form-data directly. When multipart also includes arrays such as items or contentSections, send those structured fields as JSON strings.'
   ],
@@ -41,7 +43,7 @@ export const apiCatalog = {
     {
       name: 'User App',
       routes: [
-        { method: 'GET', path: '/home', description: 'Home screen payload: cards, featured guides, checklist summary, and recent chats.' },
+        { method: 'GET', path: '/home', description: 'Home screen payload: cards, featured guides, checklist summary, recent chats, and admin-managed categories.' },
         { method: 'GET', path: '/users/me', description: 'Current user profile.' },
         { method: 'PATCH', path: '/users/me', description: 'Update profile fields shown in the mobile settings flow. Accepts a single `username` or `userName` field and supports multipart avatar upload via field `avatar`.' },
         { method: 'GET', path: '/users/me/preferences', description: 'Get language and notification preferences.' },
@@ -78,7 +80,7 @@ export const apiCatalog = {
         { method: 'GET', path: '/chat/conversations', description: 'List local chat history summaries for the user.' },
         { method: 'GET', path: '/chat/history', description: 'Alias of the chat history list for the mobile history tab.' },
         { method: 'GET', path: '/chat/conversations/:conversationId', description: 'Fetch one conversation thread.' },
-        { method: 'POST', path: '/chat/messages', description: 'Send a message, call the hosted AI backend, store the reply locally, and return both messages.' },
+        { method: 'POST', path: '/chat/messages', description: 'Send a message plus optional `emergencyType`, call the hosted AI backend, store the reply locally, and return both messages. When a new chat starts with `emergencyType`, the first AI answer is steered toward that emergency.' },
         { method: 'DELETE', path: '/chat/conversations/:conversationId', description: 'Delete a stored conversation.' }
       ]
     },
@@ -88,6 +90,10 @@ export const apiCatalog = {
         { method: 'GET', path: '/admin/dashboard', description: 'Summary metrics and recent activity for the admin dashboard.' },
         { method: 'GET', path: '/admin/ai-prompt', description: 'Read the live prompt configuration from the hosted Python AI service.' },
         { method: 'PATCH', path: '/admin/ai-prompt', description: 'Update the live prompt configuration through the hosted Python AI service.' },
+        { method: 'GET', path: '/admin/categories', description: 'List dashboard-managed categories with checklist and safety-tip usage counts.' },
+        { method: 'POST', path: '/admin/categories', description: 'Create a dashboard-managed category for checklist and safety-tip assignment.' },
+        { method: 'PATCH', path: '/admin/categories/:categoryId', description: 'Rename or reorder a category. Renames cascade to template checklists and safety tips.' },
+        { method: 'DELETE', path: '/admin/categories/:categoryId', description: 'Delete an unused category. Returns a conflict when checklist or safety-tip content still uses it.' },
         { method: 'GET', path: '/admin/checklists', description: 'List template checklists for admin CRUD.' },
         { method: 'POST', path: '/admin/checklists', description: 'Create template checklist. Supports multipart image upload via fields `icon` and `coverImage`; send `items` as a JSON string when using multipart.' },
         { method: 'PATCH', path: '/admin/checklists/:checklistId', description: 'Update template checklist. Supports multipart image upload via fields `icon` and `coverImage`; send `items` as a JSON string when using multipart.' },
