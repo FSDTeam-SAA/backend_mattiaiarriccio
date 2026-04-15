@@ -5,6 +5,7 @@ const AI_BACKEND_BASE_URL = String(process.env.AI_BACKEND_BASE_URL || '')
   .trim()
   .replace(/\/+$/, '');
 const AI_TIMEOUT_MS = Number.parseInt(process.env.AI_TIMEOUT_MS || '30000', 10);
+export const DEFAULT_AI_EMERGENCY_TYPE = 'General Emergency';
 
 const getAiBackendBaseUrl = () => {
   if (!AI_BACKEND_BASE_URL) {
@@ -53,11 +54,16 @@ export const getAiServiceInfo = () => ({
   docsUrl: AI_BACKEND_BASE_URL ? `${AI_BACKEND_BASE_URL}/docs` : null
 });
 
-export const requestAiReply = async ({ userId, query }) => {
+export const requestAiReply = async ({ userId, query, emergencyType }) => {
   const aiBaseUrl = getAiBackendBaseUrl();
+  const resolvedEmergencyType =
+    String(emergencyType || '')
+      .trim()
+      .replace(/\s+/g, ' ') || DEFAULT_AI_EMERGENCY_TYPE;
   const body = new URLSearchParams({
     user_id: userId,
-    query
+    query,
+    emergency_type: resolvedEmergencyType
   });
 
   const response = await fetchJson(`${aiBaseUrl}/api/chat/`, {

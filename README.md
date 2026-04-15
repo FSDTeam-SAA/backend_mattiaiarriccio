@@ -21,6 +21,8 @@ The Express backend wraps that service through local routes under `/api/v1/chat/
 
 The node backend reads the Python service location from `AI_BACKEND_BASE_URL` in `.env`, so you can switch Render or local URLs without editing code.
 
+The hosted Python chat endpoint now requires `emergency_type` on every `/api/chat/` request. The Node backend forwards the incoming `emergencyType` when present, otherwise it reuses the conversation's stored emergency type or falls back to `General Emergency`.
+
 ## Multipart image uploads on resource routes
 
 Image-bearing create and update routes now accept `multipart/form-data` directly. Mobile clients do not need to call a separate upload endpoint first when they are already creating or updating one of these resources.
@@ -142,7 +144,7 @@ Admin account:
 
 `/api/v1/chat`
 
-- local conversation history plus AI-backed assistant replies, with optional `emergencyType` context for emergency-specific opening messages
+- local conversation history plus AI-backed assistant replies; outbound AI requests always include an emergency type by using the request value, stored conversation value, or `General Emergency`
 
 `/api/v1/admin`
 

@@ -2,7 +2,11 @@ import { StatusCodes } from 'http-status-codes';
 import ApiError from '../utils/ApiError.js';
 import catchAsync from '../utils/catchAsync.js';
 import Conversation from '../models/conversation.model.js';
-import { requestAiReply, getAiServiceInfo } from '../services/ai.service.js';
+import {
+  requestAiReply,
+  getAiServiceInfo,
+  DEFAULT_AI_EMERGENCY_TYPE
+} from '../services/ai.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { summarizeText } from '../services/security.service.js';
 import { createId } from '../lib/id.js';
@@ -37,6 +41,11 @@ const normalizeEmergencyType = (value) =>
   String(value || '')
     .trim()
     .replace(/\s+/g, ' ');
+
+const resolveEmergencyType = (requestedEmergencyType, conversation) =>
+  requestedEmergencyType ||
+  normalizeEmergencyType(conversation?.emergencyType) ||
+  DEFAULT_AI_EMERGENCY_TYPE;
 
 const buildEmergencyAwareMessage = (message, emergencyType) => {
   const trimmedMessage = String(message || '').trim();
@@ -117,8 +126,8 @@ export const getConversationById = catchAsync(async (req, res) => {
 });
 
 export const sendChatMessage = catchAsync(async (req, res) => {
-  const emergencyType = normalizeEmergencyType(req.body.emergencyType);
-  const message = buildEmergencyAwareMessage(req.body.message, emergencyType);
+  const requestedEmergencyType = normalizeEmergencyType(req.body.emergencyType);
+  const message = buildEmergencyAwareMessage(req.body.message, requestedEmergencyType);
   const requestedConversationId = String(req.body.conversationId || '').trim();
 
   if (!message) {
@@ -139,12 +148,18 @@ export const sendChatMessage = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Conversation not found');
   }
 
+  const effectiveEmergencyType = resolveEmergencyType(
+    requestedEmergencyType,
+    conversation
+  );
+
   const aiResponse = await requestAiReply({
     userId: req.auth.user._id,
+    emergencyType: effectiveEmergencyType,
     query: buildAiQuery({
       conversation: conversation?.toObject(),
       latestMessage: message,
-      emergencyType,
+      emergencyType: effectiveEmergencyType,
       isNewConversation: !conversation
     })
   });
@@ -154,14 +169,17 @@ export const sendChatMessage = catchAsync(async (req, res) => {
       _id: createId('conv'),
       userId: req.auth.user._id,
       title: summarizeText(
-        emergencyType ? `${emergencyType} emergency` : message,
+        requestedEmergencyType ? `${requestedEmergencyType} emergency` : message,
         42
       ),
-      emergencyType,
+      emergencyType: effectiveEmergencyType,
       messages: []
     });
-  } else if (emergencyType) {
-    conversation.emergencyType = emergencyType;
+  } else if (
+    requestedEmergencyType ||
+    !normalizeEmergencyType(conversation.emergencyType)
+  ) {
+    conversation.emergencyType = effectiveEmergencyType;
   }
 
   const userMessage = {

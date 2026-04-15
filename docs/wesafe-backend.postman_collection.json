@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "We Safe Backend API",
-    "description": "# We Safe Backend API\n\nImport this collection into Postman.\n\nHosted base URL:\n- `https://backend-mattiaiarriccio.onrender.com`\n\nCollection variables included:\n- `baseUrl`\n- `userEmail`, `userPassword`\n- `adminEmail`, `adminPassword`\n- `userAccessToken`, `adminAccessToken`\n- reset tokens and resource ids used by follow-up requests\n\nSeed accounts:\n- User: `madiha.aroa@example.com / Password123!`\n- Admin: `admin@wesafe.app / Admin123!`\n\nRecommended test order:\n1. Run `System & Docs / Health Check`.\n2. Run `Auth - User / Login User`; the collection automatically saves `userAccessToken` and `userId`.\n3. Test the `User App`, `Safety Tips`, `Checklists`, and `Chat` folders.\n4. Run `Auth - Admin / Login Admin`; the collection automatically saves `adminAccessToken` and `adminId`.\n5. Test the `Admin` and `Uploads` folders.\n\nNotes:\n- The first Render request can take 30 to 60 seconds if the service is waking up.\n- Multipart routes only need a file attached when you want to test uploads.\n- Password reset requests on production may require a real OTP delivery flow, so skip them if email delivery is not configured.\n\nThe backend also proxies AI prompt and chat requests to the hosted Python service documented at `https://mattiaiaricco-ai-chatbot.onrender.com/docs`.",
+    "description": "# We Safe Backend API\n\nImport this collection into Postman.\n\nHosted base URL:\n- `https://backend-mattiaiarriccio.onrender.com`\n\nCollection variables included:\n- `baseUrl`\n- `userEmail`, `userPassword`\n- `adminEmail`, `adminPassword`\n- `userAccessToken`, `adminAccessToken`\n- `chatEmergencyType`\n- reset tokens and resource ids used by follow-up requests\n\nSeed accounts:\n- User: `madiha.aroa@example.com / Password123!`\n- Admin: `admin@wesafe.app / Admin123!`\n\nRecommended test order:\n1. Run `System & Docs / Health Check`.\n2. Run `Auth - User / Login User`; the collection automatically saves `userAccessToken` and `userId`.\n3. Test the `User App`, `Safety Tips`, `Checklists`, and `Chat` folders.\n4. Run `Auth - Admin / Login Admin`; the collection automatically saves `adminAccessToken` and `adminId`.\n5. Test the `Admin` and `Uploads` folders.\n\nNotes:\n- The first Render request can take 30 to 60 seconds if the service is waking up.\n- Multipart routes only need a file attached when you want to test uploads.\n- Password reset requests on production may require a real OTP delivery flow, so skip them if email delivery is not configured.\n- The hosted Python `/api/chat/` route now requires `emergency_type`. This backend handles that for you by forwarding `emergencyType`, reusing the conversation emergency type, or falling back to `General Emergency`.\n\nThe backend also proxies AI prompt and chat requests to the hosted Python service documented at `https://mattiaiaricco-ai-chatbot.onrender.com/docs`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -10,6 +10,7 @@
     { "key": "userPassword", "value": "Password123!", "type": "string" },
     { "key": "adminEmail", "value": "admin@wesafe.app", "type": "string" },
     { "key": "adminPassword", "value": "Admin123!", "type": "string" },
+    { "key": "chatEmergencyType", "value": "Earthquake", "type": "string" },
     { "key": "adminCategoryName", "value": "Heatwave", "type": "string" },
     { "key": "adminCategoryId", "value": "", "type": "string" },
     { "key": "newUserFirstName", "value": "Amina", "type": "string" },
@@ -779,11 +780,11 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"emergencyType\": \"Earthquake\",\n  \"message\": \"What should I do first at home?\"\n}",
+              "raw": "{\n  \"emergencyType\": \"{{chatEmergencyType}}\",\n  \"message\": \"What should I do first at home?\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": "{{baseUrl}}/api/v1/chat/messages",
-            "description": "Sends a message plus optional emergencyType to the hosted AI backend and creates a new local conversation when no conversationId is supplied. The first AI answer is steered toward the selected emergency type."
+            "description": "Sends a message to the hosted AI backend and creates a new local conversation when no conversationId is supplied. When emergencyType is provided it is forwarded directly; otherwise the backend falls back to the stored conversation type or General Emergency so the upstream request always includes emergency_type."
           }
         },
         {
@@ -809,11 +810,41 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"conversationId\": \"{{conversationId}}\",\n  \"emergencyType\": \"Earthquake\",\n  \"message\": \"Now give me a short safety checklist I can follow.\"\n}",
+              "raw": "{\n  \"conversationId\": \"{{conversationId}}\",\n  \"emergencyType\": \"{{chatEmergencyType}}\",\n  \"message\": \"Now give me a short safety checklist I can follow.\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": "{{baseUrl}}/api/v1/chat/messages",
-            "description": "Sends a follow-up message into an existing conversation. emergencyType is optional and can reinforce or update the current emergency context."
+            "description": "Sends a follow-up message into an existing conversation. emergencyType can reinforce or update the current emergency context; when omitted, the backend reuses the conversation emergency type before calling the hosted AI service."
+          }
+        },
+        {
+          "name": "Send Message - Existing Conversation Without emergencyType",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = null;",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "if (json?.data?.conversation?.id) pm.collectionVariables.set('conversationId', json.data.conversation.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conversationId\": \"{{conversationId}}\",\n  \"message\": \"Give me one more short step.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/v1/chat/messages",
+            "description": "Sends a follow-up message without emergencyType. Use this after starting a conversation to verify that the backend reuses the stored emergency context before calling the hosted AI service."
           }
         },
         {

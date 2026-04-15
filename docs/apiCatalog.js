@@ -1,4 +1,7 @@
-import { getAiServiceInfo } from '../services/ai.service.js';
+import {
+  DEFAULT_AI_EMERGENCY_TYPE,
+  getAiServiceInfo
+} from '../services/ai.service.js';
 
 const aiInfo = getAiServiceInfo();
 
@@ -20,6 +23,7 @@ export const apiCatalog = {
   notes: [
     'All authenticated routes expect a Bearer token returned by login or registration.',
     'This backend proxies AI answers from the hosted Python service at the URL above.',
+    `The hosted Python chat endpoint now requires \`emergency_type\`; this backend forwards the request \`emergencyType\`, reuses the stored conversation type, or falls back to \`${DEFAULT_AI_EMERGENCY_TYPE}\`.`,
     'AI chat and admin prompt routes read the Python service location from `AI_BACKEND_BASE_URL` in the node `.env` file.',
     'Password reset OTP responses include a debug OTP outside production so the mobile team can complete the flow without email infrastructure.',
     'Categories are managed from admin CRUD and power the category lists returned by the home and content endpoints.',
@@ -80,7 +84,7 @@ export const apiCatalog = {
         { method: 'GET', path: '/chat/conversations', description: 'List local chat history summaries for the user.' },
         { method: 'GET', path: '/chat/history', description: 'Alias of the chat history list for the mobile history tab.' },
         { method: 'GET', path: '/chat/conversations/:conversationId', description: 'Fetch one conversation thread.' },
-        { method: 'POST', path: '/chat/messages', description: 'Send a message plus optional `emergencyType`, call the hosted AI backend, store the reply locally, and return both messages. When a new chat starts with `emergencyType`, the first AI answer is steered toward that emergency.' },
+        { method: 'POST', path: '/chat/messages', description: `Send a message, call the hosted AI backend, store the reply locally, and return both messages. When provided, \`emergencyType\` is forwarded directly. Otherwise the backend reuses the conversation emergency type or falls back to \`${DEFAULT_AI_EMERGENCY_TYPE}\` so the upstream AI request always includes \`emergency_type\`.` },
         { method: 'DELETE', path: '/chat/conversations/:conversationId', description: 'Delete a stored conversation.' }
       ]
     },

@@ -70,6 +70,26 @@ const run = async () => {
       chatPayload.data?.conversation?.emergencyType === 'Earthquake',
       'Conversation emergency type missing'
     );
+    assert(chatPayload.data?.conversation?.id, 'Conversation id missing');
+
+    const followUpChatResponse = await fetch(`${baseUrl}/api/v1/chat/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userToken}`
+      },
+      body: JSON.stringify({
+        conversationId: chatPayload.data.conversation.id,
+        message: 'Give me one more short step.'
+      })
+    });
+    const followUpChatPayload = await followUpChatResponse.json();
+    assert(followUpChatResponse.ok, 'Follow-up chat route failed');
+    assert(followUpChatPayload.data?.assistantMessage?.content, 'Follow-up AI response missing');
+    assert(
+      followUpChatPayload.data?.conversation?.emergencyType === 'Earthquake',
+      'Follow-up conversation emergency type missing'
+    );
 
     const adminLoginResponse = await fetch(`${baseUrl}/api/v1/auth/admin/login`, {
       method: 'POST',
