@@ -118,6 +118,8 @@ const shouldRetryNetworkError = (error) => {
   return RETRYABLE_NETWORK_ERROR_CODES.has(networkCode);
 };
 
+const shouldRetryTimeout = (error) => error?.name === 'AbortError';
+
 const getAiBackendBaseUrl = () => {
   if (!AI_BACKEND_BASE_URL) {
     throw new ApiError(
@@ -166,6 +168,11 @@ const fetchJson = async (url, options = {}) => {
         );
       }
     } catch (error) {
+      if (attempt < maxAttempts && shouldRetryTimeout(error)) {
+        await sleep(AI_RETRY_DELAY_MS * attempt);
+        continue;
+      }
+
       if (error.name === 'AbortError') {
         throw new ApiError(StatusCodes.GATEWAY_TIMEOUT, 'AI backend request timed out');
       }

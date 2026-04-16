@@ -42,6 +42,9 @@ const normalizeEmergencyType = (value) =>
     .trim()
     .replace(/\s+/g, ' ');
 
+const pickFirstDefined = (...values) =>
+  values.find((value) => value !== undefined && value !== null && value !== '');
+
 const resolveEmergencyType = (requestedEmergencyType, conversation) =>
   requestedEmergencyType ||
   normalizeEmergencyType(conversation?.emergencyType) ||
@@ -125,9 +128,16 @@ export const getConversationById = catchAsync(async (req, res) => {
 });
 
 export const sendChatMessage = catchAsync(async (req, res) => {
-  const requestedEmergencyType = normalizeEmergencyType(req.body.emergencyType);
-  const message = buildEmergencyAwareMessage(req.body.message, requestedEmergencyType);
-  const requestedConversationId = String(req.body.conversationId || '').trim();
+  const requestedEmergencyType = normalizeEmergencyType(
+    pickFirstDefined(req.body.emergencyType, req.body.emergency_type)
+  );
+  const message = buildEmergencyAwareMessage(
+    pickFirstDefined(req.body.message, req.body.query),
+    requestedEmergencyType
+  );
+  const requestedConversationId = String(
+    pickFirstDefined(req.body.conversationId, req.body.conversation_id) || ''
+  ).trim();
 
   if (!message) {
     throw new ApiError(
