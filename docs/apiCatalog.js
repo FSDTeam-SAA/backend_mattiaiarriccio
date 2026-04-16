@@ -25,6 +25,7 @@ export const apiCatalog = {
     'This backend proxies AI answers from the hosted Python service at the URL above.',
     `The hosted Python chat endpoint now requires \`emergency_type\`; this backend forwards the request \`emergencyType\`, reuses the stored conversation type, or falls back to \`${DEFAULT_AI_EMERGENCY_TYPE}\`.`,
     'AI chat and admin prompt routes read the Python service location from `AI_BACKEND_BASE_URL` in the node `.env` file.',
+    'Transient upstream AI `502/503/504` responses are retried once, and HTML upstream error pages are summarized before being returned to clients.',
     'Password reset OTP responses include a debug OTP outside production so the mobile team can complete the flow without email infrastructure.',
     'Categories are managed from admin CRUD and power the category lists returned by the home and content endpoints.',
     'User registration and profile updates accept a single `username` or `userName` field; legacy `firstName` and `lastName` payloads still work.',

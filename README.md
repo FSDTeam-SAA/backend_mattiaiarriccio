@@ -23,6 +23,8 @@ The node backend reads the Python service location from `AI_BACKEND_BASE_URL` in
 
 The hosted Python chat endpoint now requires `emergency_type` on every `/api/chat/` request. The Node backend forwards the incoming `emergencyType` when present, otherwise it reuses the conversation's stored emergency type or falls back to `General Emergency`.
 
+Because the hosted AI service runs on Render, cold starts can occasionally surface as transient upstream `502/503/504` responses. The Node backend now retries those transient failures once and returns a concise proxy error instead of echoing the full upstream HTML error page to clients.
+
 ## Multipart image uploads on resource routes
 
 Image-bearing create and update routes now accept `multipart/form-data` directly. Mobile clients do not need to call a separate upload endpoint first when they are already creating or updating one of these resources.
@@ -94,7 +96,9 @@ MONGODB_URI=mongodb://127.0.0.1:27017/wesafe
 SESSION_TTL_HOURS=168
 RESET_OTP_TTL_MINUTES=10
 AI_BACKEND_BASE_URL=https://mattiaiaricco-ai-chatbot.onrender.com
-AI_TIMEOUT_MS=30000
+AI_TIMEOUT_MS=60000
+AI_RETRY_COUNT=1
+AI_RETRY_DELAY_MS=1500
 CLOUDINARY_CLOUD_NAME=
 CLOUDINARY_API_KEY=
 CLOUDINARY_API_SECRET=
