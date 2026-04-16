@@ -46,7 +46,6 @@ const resolveEmergencyType = (requestedEmergencyType, conversation) =>
   requestedEmergencyType ||
   normalizeEmergencyType(conversation?.emergencyType) ||
   DEFAULT_AI_EMERGENCY_TYPE;
-
 const buildEmergencyAwareMessage = (message, emergencyType) => {
   const trimmedMessage = String(message || '').trim();
 

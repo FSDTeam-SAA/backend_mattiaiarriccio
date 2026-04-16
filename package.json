@@ -6,8 +6,7 @@
   "main": "server.js",
   "scripts": {
     "dev": "nodemon server.js",
-    "start": "node server.js",
-    "smoke": "node scripts/smoke-test.js"
+    "start": "node server.js"
   },
   "keywords": [
     "express",
