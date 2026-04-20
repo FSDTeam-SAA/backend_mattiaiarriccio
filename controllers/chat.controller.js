@@ -10,11 +10,17 @@ import {
 import { sendSuccess } from '../utils/response.js';
 import { summarizeText } from '../services/security.service.js';
 import { createId } from '../lib/id.js';
+import {
+  languageInstructionFor,
+  messageFor,
+  resolveRequestLanguage
+} from '../services/language.service.js';
 
 const summarizeConversation = (conversation) => ({
   id: conversation._id,
   title: conversation.title,
   emergencyType: conversation.emergencyType || '',
+  language: conversation.language || 'en',
   messageCount: conversation.messages.length,
   lastMessagePreview:
     conversation.messages[conversation.messages.length - 1]?.content || '',
@@ -27,6 +33,7 @@ const serializeConversation = (conversation) => ({
   title: conversation.title,
   userId: conversation.userId,
   emergencyType: conversation.emergencyType || '',
+  language: conversation.language || 'en',
   createdAt: conversation.createdAt,
   updatedAt: conversation.updatedAt,
   messages: conversation.messages.map((message) => ({
@@ -49,7 +56,7 @@ const resolveEmergencyType = (requestedEmergencyType, conversation) =>
   requestedEmergencyType ||
   normalizeEmergencyType(conversation?.emergencyType) ||
   DEFAULT_AI_EMERGENCY_TYPE;
-const buildEmergencyAwareMessage = (message, emergencyType) => {
+const buildEmergencyAwareMessage = (message, emergencyType, language) => {
   const trimmedMessage = String(message || '').trim();
 
   if (trimmedMessage) {
@@ -60,10 +67,20 @@ const buildEmergencyAwareMessage = (message, emergencyType) => {
     return '';
   }
 
+  if (language === 'it') {
+    return `Aiutami con un'emergenza: ${emergencyType}. Inizia dalle azioni immediate piu importanti.`;
+  }
+
   return `Help me with a ${emergencyType} emergency. Start with the most important immediate actions.`;
 };
 
-const buildAiQuery = ({ conversation, latestMessage, emergencyType, isNewConversation }) => {
+const buildAiQuery = ({
+  conversation,
+  latestMessage,
+  emergencyType,
+  language,
+  isNewConversation
+}) => {
   const history = conversation?.messages?.slice(-6) || [];
   const selectedEmergencyType = normalizeEmergencyType(
     emergencyType || conversation?.emergencyType
@@ -78,7 +95,11 @@ const buildAiQuery = ({ conversation, latestMessage, emergencyType, isNewConvers
     : '';
 
   if (history.length === 0) {
-    return [emergencyContext, `Latest user request:\n${latestMessage}`]
+    return [
+      languageInstructionFor(language),
+      emergencyContext,
+      `Latest user request:\n${latestMessage}`
+    ]
       .filter(Boolean)
       .join('\n\n');
   }
@@ -88,6 +109,7 @@ const buildAiQuery = ({ conversation, latestMessage, emergencyType, isNewConvers
     .join('\n');
 
   return [
+    languageInstructionFor(language),
     emergencyContext,
     'Use the recent emergency conversation context below if it is relevant.',
     formattedHistory,
@@ -102,8 +124,10 @@ export const listConversations = catchAsync(async (req, res) => {
     .sort({ updatedAt: -1 })
     .lean();
 
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
+
   sendSuccess(res, {
-    message: 'Chat history fetched successfully',
+    message: messageFor(language, 'chatHistoryFetched'),
     data: conversations.map(summarizeConversation)
   });
 });
@@ -118,8 +142,10 @@ export const getConversationById = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Conversation not found');
   }
 
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
+
   sendSuccess(res, {
-    message: 'Conversation fetched successfully',
+    message: messageFor(language, 'conversationFetched'),
     data: {
       ...serializeConversation(conversation),
       aiSource: getAiServiceInfo()
@@ -128,12 +154,14 @@ export const getConversationById = catchAsync(async (req, res) => {
 });
 
 export const sendChatMessage = catchAsync(async (req, res) => {
+  const requestedLanguage = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
   const requestedEmergencyType = normalizeEmergencyType(
     pickFirstDefined(req.body.emergencyType, req.body.emergency_type)
   );
   const message = buildEmergencyAwareMessage(
     pickFirstDefined(req.body.message, req.body.query),
-    requestedEmergencyType
+    requestedEmergencyType,
+    requestedLanguage
   );
   const requestedConversationId = String(
     pickFirstDefined(req.body.conversationId, req.body.conversation_id) || ''
@@ -165,10 +193,12 @@ export const sendChatMessage = catchAsync(async (req, res) => {
   const aiResponse = await requestAiReply({
     userId: req.auth.user._id,
     emergencyType: effectiveEmergencyType,
+    language: requestedLanguage,
     query: buildAiQuery({
       conversation: conversation?.toObject(),
       latestMessage: message,
       emergencyType: effectiveEmergencyType,
+      language: requestedLanguage,
       isNewConversation: !conversation
     })
   });
@@ -182,6 +212,7 @@ export const sendChatMessage = catchAsync(async (req, res) => {
         42
       ),
       emergencyType: effectiveEmergencyType,
+      language: requestedLanguage,
       messages: []
     });
   } else if (
@@ -190,6 +221,7 @@ export const sendChatMessage = catchAsync(async (req, res) => {
   ) {
     conversation.emergencyType = effectiveEmergencyType;
   }
+  conversation.language = requestedLanguage;
 
   const userMessage = {
     _id: createId('msg'),
@@ -210,7 +242,7 @@ export const sendChatMessage = catchAsync(async (req, res) => {
 
   sendSuccess(res, {
     statusCode: StatusCodes.CREATED,
-    message: 'Chat message processed successfully',
+    message: messageFor(requestedLanguage, 'chatProcessed'),
     data: {
       conversation: serializeConversation(conversation.toObject()),
       userMessage: {
@@ -240,7 +272,9 @@ export const deleteConversation = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Conversation not found');
   }
 
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
+
   sendSuccess(res, {
-    message: 'Conversation deleted successfully'
+    message: messageFor(language, 'conversationDeleted')
   });
 });

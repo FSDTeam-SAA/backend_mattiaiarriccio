@@ -21,6 +21,11 @@ import {
   SESSION_TTL_HOURS
 } from '../services/security.service.js';
 import { resolveImageUrl } from '../services/media.service.js';
+import {
+  ensureSupportedLanguage,
+  messageFor,
+  resolveRequestLanguage
+} from '../services/language.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { publicUser } from '../utils/serializers.js';
 
@@ -51,6 +56,7 @@ const createSessionPayload = async (user) => {
 
   return {
     accessToken: session.token,
+    refreshToken: session.token,
     expiresAt: session.expiresAt,
     user: publicUser(user)
   };
@@ -77,7 +83,9 @@ export const register = catchAsync(async (req, res) => {
   const firstName = resolveUserName(req.body);
   const lastName = String(req.body.lastName || '').trim();
   const phoneNumber = String(req.body.phoneNumber || '').trim();
-  const preferredLanguage = String(req.body.preferredLanguage || 'en').trim();
+  const preferredLanguage = ensureSupportedLanguage(
+    req.body.preferredLanguage || resolveRequestLanguage(req)
+  );
   const email = ensureEmail(req.body.email);
   const password = ensurePasswordStrength(req.body.password);
   const confirmPassword = String(req.body.confirmPassword || '');
@@ -128,7 +136,7 @@ export const register = catchAsync(async (req, res) => {
 
   sendSuccess(res, {
     statusCode: StatusCodes.CREATED,
-    message: 'User registered successfully',
+    message: messageFor(preferredLanguage, 'registered'),
     data: sessionPayload
   });
 });
@@ -151,9 +159,10 @@ export const login = (role) =>
     }
 
     const sessionPayload = await createSessionPayload(user);
+    const language = resolveRequestLanguage(req, user.preferredLanguage);
 
     sendSuccess(res, {
-      message: `${role === 'admin' ? 'Admin' : 'User'} logged in successfully`,
+      message: messageFor(language, 'loggedIn', role),
       data: sessionPayload
     });
   });
@@ -163,6 +172,9 @@ export const socialLogin = catchAsync(async (req, res) => {
   const email = ensureEmail(req.body.email);
   const fullName = String(req.body.fullName || '').trim();
   const avatarUrl = String(req.body.avatarUrl || '').trim();
+  const preferredLanguage = ensureSupportedLanguage(
+    req.body.preferredLanguage || resolveRequestLanguage(req)
+  );
 
   if (!provider) {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'provider is required');
@@ -195,7 +207,7 @@ export const socialLogin = catchAsync(async (req, res) => {
       email,
       phoneNumber: '',
       avatarUrl: resolvedAvatarUrl,
-      preferredLanguage: 'en',
+      preferredLanguage,
       notificationsEnabled: true,
       onboardingCompleted: true,
       passwordHash: await hashPassword(createOpaqueToken(12))
@@ -211,6 +223,7 @@ export const socialLogin = catchAsync(async (req, res) => {
       bodyValue: avatarUrl,
       currentValue: user.avatarUrl
     });
+    user.preferredLanguage = preferredLanguage;
     await user.save();
   }
 
@@ -224,8 +237,42 @@ export const socialLogin = catchAsync(async (req, res) => {
   const sessionPayload = await createSessionPayload(user);
 
   sendSuccess(res, {
-    message: 'Social login completed successfully',
+    message: messageFor(preferredLanguage, 'socialLogin'),
     data: sessionPayload
+  });
+});
+
+export const refreshToken = catchAsync(async (req, res) => {
+  const refreshTokenValue = String(req.body.refreshToken || '').trim();
+
+  if (!refreshTokenValue) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'refreshToken is required');
+  }
+
+  const session = await Session.findOne({ token: refreshTokenValue });
+
+  if (!session || isExpired(session.expiresAt)) {
+    if (session) {
+      await Session.deleteOne({ _id: session._id });
+    }
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Invalid or expired refresh token');
+  }
+
+  session.token = createOpaqueToken();
+  session.expiresAt = hoursFromNow(SESSION_TTL_HOURS);
+  await session.save();
+
+  const user = await User.findById(session.userId).lean();
+  const language = resolveRequestLanguage(req, user?.preferredLanguage);
+
+  sendSuccess(res, {
+    message: messageFor(language, 'loggedIn', session.role),
+    data: {
+      accessToken: session.token,
+      refreshToken: session.token,
+      expiresAt: session.expiresAt,
+      user: publicUser(user)
+    }
   });
 });
 
@@ -260,7 +307,7 @@ export const requestPasswordReset = (role) =>
 export const verifyPasswordResetOtp = (role) =>
   catchAsync(async (req, res) => {
     const email = ensureEmail(req.body.email);
-    const otpCode = String(req.body.otpCode || '').trim();
+    const otpCode = String(req.body.otpCode || req.body.otp || '').trim();
 
     if (!otpCode) {
       throw new ApiError(StatusCodes.BAD_REQUEST, 'otpCode is required');
@@ -298,7 +345,7 @@ export const verifyPasswordResetOtp = (role) =>
 export const resetPassword = (role) =>
   catchAsync(async (req, res) => {
     const email = ensureEmail(req.body.email);
-    const resetToken = String(req.body.resetToken || '').trim();
+    const resetToken = String(req.body.resetToken || req.body.otp || '').trim();
     const password = ensurePasswordStrength(req.body.password);
     const confirmPassword = String(req.body.confirmPassword || '');
 
@@ -311,8 +358,8 @@ export const resetPassword = (role) =>
     const resetRequest = await PasswordReset.findOne({
       email,
       role,
-      resetToken,
-      consumedAt: null
+      consumedAt: null,
+      $or: [{ resetToken }, { otpCode: resetToken }]
     });
 
     if (!resetRequest || !resetRequest.verifiedAt) {
@@ -351,8 +398,9 @@ export const resetPassword = (role) =>
 
 export const logout = catchAsync(async (req, res) => {
   await Session.deleteOne({ _id: req.auth.session._id });
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
 
   sendSuccess(res, {
-    message: 'Logged out successfully'
+    message: messageFor(language, 'loggedOut')
   });
 });

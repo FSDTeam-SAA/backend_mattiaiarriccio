@@ -43,6 +43,7 @@ const userSchema = new mongoose.Schema(
     },
     preferredLanguage: {
       type: String,
+      enum: ['en', 'it'],
       default: 'en'
     },
     notificationsEnabled: {

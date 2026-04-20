@@ -5,6 +5,7 @@ import {
   register,
   requestPasswordReset,
   resetPassword,
+  refreshToken,
   socialLogin,
   verifyPasswordResetOtp
 } from '../controllers/auth.controller.js';
@@ -23,6 +24,7 @@ router.post('/register', avatarUpload, register);
 router.post('/login', login('user'));
 router.post('/admin/login', login('admin'));
 router.post('/social-login', avatarUpload, socialLogin);
+router.post('/refresh-token', refreshToken);
 
 router.post('/password-reset/request', requestPasswordReset('user'));
 router.post('/password-reset/verify', verifyPasswordResetOtp('user'));

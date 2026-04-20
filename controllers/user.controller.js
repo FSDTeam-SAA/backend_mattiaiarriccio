@@ -12,6 +12,12 @@ import { appConfig } from '../data/appConfig.js';
 import { createId } from '../lib/id.js';
 import { getManagedCategoryNames } from '../services/category.service.js';
 import {
+  ensureSupportedLanguage,
+  homeCopyFor,
+  messageFor,
+  resolveRequestLanguage
+} from '../services/language.service.js';
+import {
   ensurePasswordStrength,
   ensureConfirmedPassword,
   verifyPassword,
@@ -59,9 +65,10 @@ const conversationSummary = (conversation) => ({
 
 export const getCurrentUser = catchAsync(async (req, res) => {
   const user = await User.findById(req.auth.user._id).lean();
+  const language = resolveRequestLanguage(req, user?.preferredLanguage);
 
   sendSuccess(res, {
-    message: 'Current user fetched successfully',
+    message: messageFor(language, 'currentUserFetched'),
     data: publicUser(user)
   });
 });
@@ -99,18 +106,23 @@ export const updateCurrentUser = catchAsync(async (req, res) => {
   });
 
   await user.save();
+  const language = resolveRequestLanguage(req, user.preferredLanguage);
 
   sendSuccess(res, {
-    message: 'Profile updated successfully',
+    message:
+      language === 'it'
+        ? 'Profilo aggiornato correttamente'
+        : 'Profile updated successfully',
     data: publicUser(user.toObject())
   });
 });
 
 export const getUserPreferences = catchAsync(async (req, res) => {
   const user = await User.findById(req.auth.user._id).lean();
+  const language = resolveRequestLanguage(req, user?.preferredLanguage);
 
   sendSuccess(res, {
-    message: 'User preferences fetched successfully',
+    message: messageFor(language, 'userPreferencesFetched'),
     data: {
       preferredLanguage: user.preferredLanguage,
       notificationsEnabled: user.notificationsEnabled,
@@ -128,7 +140,7 @@ export const updateUserPreferences = catchAsync(async (req, res) => {
   }
 
   if (req.body.preferredLanguage !== undefined) {
-    user.preferredLanguage = String(req.body.preferredLanguage).trim();
+    user.preferredLanguage = ensureSupportedLanguage(req.body.preferredLanguage);
   }
 
   if (req.body.notificationsEnabled !== undefined) {
@@ -142,7 +154,7 @@ export const updateUserPreferences = catchAsync(async (req, res) => {
   await user.save();
 
   sendSuccess(res, {
-    message: 'Preferences updated successfully',
+    message: messageFor(user.preferredLanguage, 'preferencesUpdated'),
     data: {
       preferredLanguage: user.preferredLanguage,
       notificationsEnabled: user.notificationsEnabled,
@@ -173,14 +185,25 @@ export const changePassword = catchAsync(async (req, res) => {
 
   user.passwordHash = await hashPassword(newPassword);
   await user.save();
+  const language = resolveRequestLanguage(req, user.preferredLanguage);
 
   sendSuccess(res, {
-    message: 'Password changed successfully'
+    message:
+      language === 'it'
+        ? 'Password aggiornata correttamente'
+        : 'Password changed successfully'
   });
 });
 
 export const getHome = catchAsync(async (req, res) => {
   const userId = req.auth.user._id;
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
+  const copy = homeCopyFor(language);
+  const featuredGuideQuery = {
+    status: 'published',
+    featured: true,
+    $or: [{ language }, { language: 'en' }]
+  };
 
   const [
     user,
@@ -200,10 +223,7 @@ export const getHome = catchAsync(async (req, res) => {
         ]
       }).lean(),
       ChecklistProgress.find({ userId }).lean(),
-      SafetyTip.find({
-        status: 'published',
-        featured: true
-      })
+      SafetyTip.find(featuredGuideQuery)
         .sort({ updatedAt: -1 })
         .limit(4)
         .lean(),
@@ -213,30 +233,30 @@ export const getHome = catchAsync(async (req, res) => {
     ]);
 
   sendSuccess(res, {
-    message: 'Home payload fetched successfully',
+    message: messageFor(language, 'homeFetched'),
     data: {
       user: publicUser(user),
       greeting: {
-        title: `Hello, ${user.firstName}`,
-        subtitle: 'Help is easier to reach when plans, guides, and chat are all in one place.'
+        title: language === 'it' ? `Ciao, ${user.firstName}` : `Hello, ${user.firstName}`,
+        subtitle: copy.greetingSubtitle
       },
       quickActions: [
         {
           id: 'quick_ai_chat',
-          title: 'AI Chat Support',
-          description: 'Get instant emergency guidance powered by the hosted AI backend.',
+          title: copy.quickActions.quick_ai_chat.title,
+          description: copy.quickActions.quick_ai_chat.description,
           route: '/chat/messages'
         },
         {
           id: 'quick_guides',
-          title: 'Safety Guides',
-          description: 'Read practical emergency instructions and category-based guides.',
+          title: copy.quickActions.quick_guides.title,
+          description: copy.quickActions.quick_guides.description,
           route: '/safety-tips'
         },
         {
           id: 'quick_checklists',
-          title: 'Checklist',
-          description: 'Track readiness and personal emergency supplies.',
+          title: copy.quickActions.quick_checklists.title,
+          description: copy.quickActions.quick_checklists.description,
           route: '/checklists'
         }
       ],

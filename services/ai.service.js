@@ -203,7 +203,7 @@ export const getAiServiceInfo = () => ({
   docsUrl: AI_BACKEND_BASE_URL ? `${AI_BACKEND_BASE_URL}/docs` : null
 });
 
-export const requestAiReply = async ({ userId, query, emergencyType }) => {
+export const requestAiReply = async ({ userId, query, emergencyType, language }) => {
   const aiBaseUrl = getAiBackendBaseUrl();
   const resolvedEmergencyType =
     String(emergencyType || '')
@@ -212,7 +212,8 @@ export const requestAiReply = async ({ userId, query, emergencyType }) => {
   const body = new URLSearchParams({
     user_id: userId,
     query,
-    emergency_type: resolvedEmergencyType
+    emergency_type: resolvedEmergencyType,
+    language: String(language || 'en').trim().toLowerCase()
   });
 
   const response = await fetchJson(`${aiBaseUrl}/api/chat/`, {

@@ -47,6 +47,11 @@ const conversationSchema = new mongoose.Schema(
       default: '',
       trim: true
     },
+    language: {
+      type: String,
+      enum: ['en', 'it'],
+      default: 'en'
+    },
     messages: {
       type: [conversationMessageSchema],
       default: []
