@@ -1,244 +1,131 @@
+import OpenAI from 'openai';
 import { StatusCodes } from 'http-status-codes';
 import ApiError from '../utils/ApiError.js';
+import PromptConfig from '../models/promptConfig.model.js';
+import {
+  DEFAULT_WELCOME_MESSAGE,
+  DEFAULT_SYSTEM_INSTRUCTION,
+  DEFAULT_FALLBACK_RESPONSE,
+  buildSystemMessage,
+  languageInstructionFor,
+  normalizeLanguage
+} from './aiPrompts.js';
 
-const AI_BACKEND_BASE_URL = String(process.env.AI_BACKEND_BASE_URL || '')
-  .trim()
-  .replace(/\/+$/, '');
-const AI_TIMEOUT_MS = Number.parseInt(process.env.AI_TIMEOUT_MS || '60000', 10);
-const AI_RETRY_COUNT = Number.parseInt(process.env.AI_RETRY_COUNT || '1', 10);
-const AI_RETRY_DELAY_MS = Number.parseInt(process.env.AI_RETRY_DELAY_MS || '1500', 10);
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5-mini';
 export const DEFAULT_AI_EMERGENCY_TYPE = 'General Emergency';
-const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
-const RETRYABLE_NETWORK_ERROR_CODES = new Set([
-  'ECONNRESET',
-  'ECONNREFUSED',
-  'ENOTFOUND',
-  'ETIMEDOUT',
-  'EAI_AGAIN'
-]);
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let openaiClient = null;
 
-const truncate = (value, maxLength = 240) => {
-  const normalized = String(value || '')
-    .replace(/\s+/g, ' ')
-    .trim();
+const getOpenAIClient = () => {
+  if (openaiClient) return openaiClient;
 
-  if (!normalized) {
-    return '';
-  }
-
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
-};
-
-const extractUpstreamJsonMessage = (payload) => {
-  if (!payload || typeof payload !== 'object') {
-    return '';
-  }
-
-  const directMessage = [
-    payload.message,
-    payload.error,
-    payload.detail,
-    payload.reply
-  ].find((value) => typeof value === 'string' && value.trim());
-
-  if (directMessage) {
-    return directMessage;
-  }
-
-  if (Array.isArray(payload.detail)) {
-    return payload.detail
-      .map((entry) => {
-        if (typeof entry === 'string') {
-          return entry;
-        }
-
-        if (entry && typeof entry === 'object') {
-          return entry.msg || entry.message || '';
-        }
-
-        return '';
-      })
-      .filter(Boolean)
-      .join(', ');
-  }
-
-  return '';
-};
-
-const formatUpstreamErrorMessage = (response, errorBody) => {
-  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
-  const statusLabel = `AI backend returned ${response.status}${
-    response.statusText ? ` ${response.statusText}` : ''
-  }`;
-  const trimmedBody = String(errorBody || '').trim();
-
-  if (!trimmedBody) {
-    return statusLabel;
-  }
-
-  const looksJson =
-    contentType.includes('application/json') ||
-    trimmedBody.startsWith('{') ||
-    trimmedBody.startsWith('[');
-
-  if (looksJson) {
-    try {
-      const parsedBody = JSON.parse(trimmedBody);
-      const parsedMessage = extractUpstreamJsonMessage(parsedBody);
-
-      if (parsedMessage) {
-        return `${statusLabel}: ${truncate(parsedMessage)}`;
-      }
-    } catch {
-      // Fall through to plain-text handling when the upstream body is not valid JSON.
-    }
-  }
-
-  const looksHtml =
-    contentType.includes('text/html') ||
-    /^<!doctype html>/i.test(trimmedBody) ||
-    /^<html/i.test(trimmedBody);
-
-  if (looksHtml) {
-    return `${statusLabel}. The upstream service returned an HTML error page.`;
-  }
-
-  return `${statusLabel}: ${truncate(trimmedBody)}`;
-};
-
-const shouldRetryNetworkError = (error) => {
-  const networkCode = error?.cause?.code || error?.code;
-
-  return RETRYABLE_NETWORK_ERROR_CODES.has(networkCode);
-};
-
-const shouldRetryTimeout = (error) => error?.name === 'AbortError';
-
-const getAiBackendBaseUrl = () => {
-  if (!AI_BACKEND_BASE_URL) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
     throw new ApiError(
       StatusCodes.INTERNAL_SERVER_ERROR,
-      'AI_BACKEND_BASE_URL is not configured'
+      'OPENAI_API_KEY is not configured'
     );
   }
 
-  return AI_BACKEND_BASE_URL;
+  openaiClient = new OpenAI({ apiKey });
+  return openaiClient;
 };
 
-const fetchJson = async (url, options = {}) => {
-  const maxAttempts = Math.max(1, AI_RETRY_COUNT + 1);
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
-
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal
-      });
-
-      if (!response.ok) {
-        const errorBody = await response.text();
-        const formattedMessage = formatUpstreamErrorMessage(response, errorBody);
-
-        if (
-          attempt < maxAttempts &&
-          RETRYABLE_STATUS_CODES.has(response.status)
-        ) {
-          await sleep(AI_RETRY_DELAY_MS * attempt);
-          continue;
-        }
-
-        throw new ApiError(StatusCodes.BAD_GATEWAY, formattedMessage);
-      }
-
-      try {
-        return await response.json();
-      } catch {
-        throw new ApiError(
-          StatusCodes.BAD_GATEWAY,
-          'AI backend returned a non-JSON success response'
-        );
-      }
-    } catch (error) {
-      if (attempt < maxAttempts && shouldRetryTimeout(error)) {
-        await sleep(AI_RETRY_DELAY_MS * attempt);
-        continue;
-      }
-
-      if (error.name === 'AbortError') {
-        throw new ApiError(StatusCodes.GATEWAY_TIMEOUT, 'AI backend request timed out');
-      }
-
-      if (error instanceof ApiError) {
-        throw error;
-      }
-
-      if (attempt < maxAttempts && shouldRetryNetworkError(error)) {
-        await sleep(AI_RETRY_DELAY_MS * attempt);
-        continue;
-      }
-
-      throw new ApiError(
-        StatusCodes.BAD_GATEWAY,
-        'AI backend request failed before a response was received'
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  throw new ApiError(StatusCodes.BAD_GATEWAY, 'AI backend request failed');
-};
-
-export const getAiServiceInfo = () => ({
-  baseUrl: AI_BACKEND_BASE_URL || null,
-  docsUrl: AI_BACKEND_BASE_URL ? `${AI_BACKEND_BASE_URL}/docs` : null
-});
-
-export const requestAiReply = async ({ userId, query, emergencyType, language }) => {
-  const aiBaseUrl = getAiBackendBaseUrl();
-  const resolvedEmergencyType =
-    String(emergencyType || '')
-      .trim()
-      .replace(/\s+/g, ' ') || DEFAULT_AI_EMERGENCY_TYPE;
-  const body = new URLSearchParams({
-    user_id: userId,
-    query,
-    emergency_type: resolvedEmergencyType,
-    language: String(language || 'en').trim().toLowerCase()
-  });
-
-  const response = await fetchJson(`${aiBaseUrl}/api/chat/`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body
-  });
+const readPromptConfig = async () => {
+  const doc = await PromptConfig.findOne({ type: 'global_prompt' }).lean();
 
   return {
-    raw: response,
-    reply: response.reply || response.message || ''
+    welcomeInstruction:
+      (doc && doc.welcome_instruction) || DEFAULT_WELCOME_MESSAGE,
+    systemInstruction:
+      (doc && doc.system_instruction) || DEFAULT_SYSTEM_INSTRUCTION,
+    fallbackMessage:
+      (doc && doc.fallback_message) || DEFAULT_FALLBACK_RESPONSE
   };
 };
 
+const normalizeEmergencyType = (value) => {
+  const cleaned = String(value || '').trim().replace(/\s+/g, ' ');
+  return cleaned || DEFAULT_AI_EMERGENCY_TYPE;
+};
+
+export const getAiServiceInfo = () => ({
+  mode: 'embedded',
+  provider: 'openai',
+  model: OPENAI_MODEL,
+  baseUrl: null,
+  docsUrl: null
+});
+
+export const requestAiReply = async ({
+  query,
+  emergencyType,
+  language
+}) => {
+  const config = await readPromptConfig();
+  const resolvedEmergencyType = normalizeEmergencyType(emergencyType);
+  const lang = normalizeLanguage(language);
+
+  const systemMessage = buildSystemMessage({
+    systemInstruction: config.systemInstruction,
+    welcomeInstruction: config.welcomeInstruction,
+    fallbackMessage: config.fallbackMessage,
+    languageInstruction: languageInstructionFor(lang),
+    emergencyType: resolvedEmergencyType
+  });
+
+  const messages = [
+    { role: 'system', content: systemMessage },
+    { role: 'user', content: String(query || '') }
+  ];
+
+  try {
+    const client = getOpenAIClient();
+    const completion = await client.chat.completions.create({
+      model: OPENAI_MODEL,
+      messages,
+      max_completion_tokens: 300,
+      reasoning_effort: 'minimal',
+      verbosity: 'low'
+    });
+
+    const reply = completion?.choices?.[0]?.message?.content || '';
+
+    return {
+      reply,
+      raw: {
+        id: completion?.id,
+        model: completion?.model || OPENAI_MODEL
+      }
+    };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+
+    const upstreamMessage =
+      error?.error?.message ||
+      error?.response?.data?.error?.message ||
+      error?.message ||
+      'OpenAI request failed';
+
+    throw new ApiError(
+      StatusCodes.BAD_GATEWAY,
+      `AI backend: ${upstreamMessage}`
+    );
+  }
+};
+
 export const fetchAiPrompt = async () => {
-  const aiBaseUrl = getAiBackendBaseUrl();
-  const response = await fetchJson(`${aiBaseUrl}/admin/prompt`);
+  const config = await readPromptConfig();
 
   return {
-    welcomeMessage: response.welcome_message || response.welcome_instruction || '',
-    systemInstruction: response.system_instruction || '',
-    fallbackMessage: response.fallback_message || '',
-    raw: response
+    welcomeMessage: config.welcomeInstruction,
+    systemInstruction: config.systemInstruction,
+    fallbackMessage: config.fallbackMessage,
+    raw: {
+      welcome_instruction: config.welcomeInstruction,
+      system_instruction: config.systemInstruction,
+      fallback_message: config.fallbackMessage
+    }
   };
 };
 
@@ -247,33 +134,23 @@ export const updateAiPrompt = async ({
   systemInstruction,
   fallbackMessage
 }) => {
-  const aiBaseUrl = getAiBackendBaseUrl();
-  const body = new URLSearchParams();
+  const update = { updated_at: new Date() };
 
   if (welcomeMessage !== undefined) {
-    body.set('welcome_message', welcomeMessage);
+    update.welcome_instruction = welcomeMessage;
   }
-
   if (systemInstruction !== undefined) {
-    body.set('system_instruction', systemInstruction);
+    update.system_instruction = systemInstruction;
   }
-
   if (fallbackMessage !== undefined) {
-    body.set('fallback_message', fallbackMessage);
+    update.fallback_message = fallbackMessage;
   }
 
-  const response = await fetchJson(`${aiBaseUrl}/admin/prompt`, {
-    method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body
-  });
+  await PromptConfig.updateOne(
+    { type: 'global_prompt' },
+    { $set: update, $setOnInsert: { type: 'global_prompt' } },
+    { upsert: true }
+  );
 
-  return {
-    welcomeMessage: response.welcome_message || response.welcome_instruction || '',
-    systemInstruction: response.system_instruction || '',
-    fallbackMessage: response.fallback_message || '',
-    raw: response
-  };
+  return fetchAiPrompt();
 };
