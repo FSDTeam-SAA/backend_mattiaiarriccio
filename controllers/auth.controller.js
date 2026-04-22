@@ -1,4 +1,5 @@
 import { StatusCodes } from 'http-status-codes';
+import { OAuth2Client } from 'google-auth-library';
 import ApiError from '../utils/ApiError.js';
 import catchAsync from '../utils/catchAsync.js';
 import User from '../models/user.model.js';
@@ -17,6 +18,7 @@ import {
   maskEmail,
   hoursFromNow,
   minutesFromNow,
+  isExpired,
   OTP_TTL_MINUTES,
   SESSION_TTL_HOURS
 } from '../services/security.service.js';
@@ -44,6 +46,76 @@ const resolveUserName = (body = {}) =>
 
 const normalizeName = (firstName, lastName) =>
   `${String(firstName || '').trim()} ${String(lastName || '').trim()}`.trim();
+
+const googleOAuthClient = new OAuth2Client();
+
+const googleAudienceClientIds = () => {
+  const rawValues = [
+    process.env.GOOGLE_WEB_CLIENT_ID,
+    process.env.GOOGLE_ANDROID_CLIENT_ID,
+    process.env.GOOGLE_IOS_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_IDS
+  ];
+
+  return [
+    ...new Set(
+      rawValues
+        .flatMap((value) => String(value || '').split(','))
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  ];
+};
+
+const verifyGoogleProfile = async (idToken) => {
+  const cleanedIdToken = String(idToken || '').trim();
+
+  if (!cleanedIdToken) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Google idToken is required');
+  }
+
+  const audience = googleAudienceClientIds();
+
+  if (audience.length === 0) {
+    throw new ApiError(
+      StatusCodes.SERVICE_UNAVAILABLE,
+      'Google sign-in is not configured. Set GOOGLE_WEB_CLIENT_ID on the backend.'
+    );
+  }
+
+  let ticket;
+
+  try {
+    ticket = await googleOAuthClient.verifyIdToken({
+      idToken: cleanedIdToken,
+      audience
+    });
+  } catch {
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Invalid Google sign-in token');
+  }
+
+  const payload = ticket.getPayload();
+
+  if (!payload?.email) {
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Google account email is missing');
+  }
+
+  if (payload.email_verified === false) {
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Google account email is not verified');
+  }
+
+  const email = ensureEmail(payload.email);
+  const fullName =
+    String(payload.name || normalizeName(payload.given_name, payload.family_name)).trim() ||
+    email.split('@')[0];
+
+  return {
+    email,
+    fullName,
+    avatarUrl: String(payload.picture || '').trim()
+  };
+};
 
 const createSessionPayload = async (user) => {
   const session = await Session.create({
@@ -169,9 +241,6 @@ export const login = (role) =>
 
 export const socialLogin = catchAsync(async (req, res) => {
   const provider = String(req.body.provider || '').trim().toLowerCase();
-  const email = ensureEmail(req.body.email);
-  const fullName = String(req.body.fullName || '').trim();
-  const avatarUrl = String(req.body.avatarUrl || '').trim();
   const preferredLanguage = ensureSupportedLanguage(
     req.body.preferredLanguage || resolveRequestLanguage(req)
   );
@@ -180,9 +249,15 @@ export const socialLogin = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'provider is required');
   }
 
-  if (!fullName) {
-    throw new ApiError(StatusCodes.BAD_REQUEST, 'fullName is required');
+  if (provider !== 'google') {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'Unsupported social provider');
   }
+
+  const googleProfile = await verifyGoogleProfile(req.body.idToken);
+  const email = googleProfile.email;
+  const fullName = googleProfile.fullName;
+  const avatarUrl =
+    googleProfile.avatarUrl || String(req.body.avatarUrl || req.body.avatar || '').trim();
 
   const [firstName, ...rest] = fullName.split(' ');
   const lastName = rest.join(' ');

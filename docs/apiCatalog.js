@@ -38,7 +38,7 @@ export const apiCatalog = {
         { method: 'POST', path: '/auth/register', description: 'Create a user account and return an access token. Accepts a single `username` or `userName` field and supports multipart avatar upload via field `avatar`.' },
         { method: 'POST', path: '/auth/login', description: 'User email/password login.' },
         { method: 'POST', path: '/auth/admin/login', description: 'Admin email/password login.' },
-        { method: 'POST', path: '/auth/social-login', description: 'Issue a local session after client-side provider sign-in. Supports multipart avatar upload via field `avatar`.' },
+        { method: 'POST', path: '/auth/social-login', description: 'Issue a local session after Google sign-in. Requires `provider: google` and a Google `idToken`.' },
         { method: 'POST', path: '/auth/password-reset/request', description: 'Request OTP for user password reset.' },
         { method: 'POST', path: '/auth/password-reset/verify', description: 'Verify OTP and receive reset token.' },
         { method: 'POST', path: '/auth/password-reset/reset', description: 'Reset password using verified reset token.' },
