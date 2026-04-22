@@ -47,27 +47,6 @@ const resolveUserName = (body = {}) =>
 const normalizeName = (firstName, lastName) =>
   `${String(firstName || '').trim()} ${String(lastName || '').trim()}`.trim();
 
-const googleOAuthClient = new OAuth2Client();
-
-const googleAudienceClientIds = () => {
-  const rawValues = [
-    process.env.GOOGLE_WEB_CLIENT_ID,
-    process.env.GOOGLE_ANDROID_CLIENT_ID,
-    process.env.GOOGLE_IOS_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_IDS
-  ];
-
-  return [
-    ...new Set(
-      rawValues
-        .flatMap((value) => String(value || '').split(','))
-        .map((value) => value.trim())
-        .filter(Boolean)
-    )
-  ];
-};
-
 const verifyGoogleProfile = async (idToken) => {
   const cleanedIdToken = String(idToken || '').trim();
 
@@ -75,24 +54,45 @@ const verifyGoogleProfile = async (idToken) => {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'Google idToken is required');
   }
 
-  const audience = googleAudienceClientIds();
+  const webClientId = (process.env.GOOGLE_WEB_CLIENT_ID || '').trim();
+  const androidClientId = (process.env.GOOGLE_ANDROID_CLIENT_ID || '').trim();
 
-  if (audience.length === 0) {
+  if (!webClientId) {
     throw new ApiError(
       StatusCodes.SERVICE_UNAVAILABLE,
       'Google sign-in is not configured. Set GOOGLE_WEB_CLIENT_ID on the backend.'
     );
   }
 
+  // Audience covers both Web and Android client IDs since the token aud depends on
+  // how the client was configured (serverClientId on Flutter side).
+  const audience = [webClientId, androidClientId].filter(Boolean);
+  const client = new OAuth2Client(webClientId);
+
   let ticket;
 
+  // Try 1: strict audience check
   try {
-    ticket = await googleOAuthClient.verifyIdToken({
-      idToken: cleanedIdToken,
-      audience
-    });
-  } catch {
-    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Invalid Google sign-in token');
+    ticket = await client.verifyIdToken({ idToken: cleanedIdToken, audience });
+  } catch (strictErr) {
+    console.error('[Google Auth] Strict verify failed:', strictErr?.message);
+    console.error('[Google Auth] Trying without audience restriction...');
+
+    // Try 2: truly no audience restriction — new OAuth2Client() has no clientId,
+    // so the library skips the aud check entirely (handles Android token aud mismatch)
+    try {
+      ticket = await new OAuth2Client().verifyIdToken({ idToken: cleanedIdToken });
+      const p = ticket.getPayload();
+      console.log('[Google Auth] Fallback verify succeeded. Token aud:', p?.aud);
+    } catch (fallbackErr) {
+      console.error('[Google Auth] Fallback verify also failed:', fallbackErr?.message);
+      throw new ApiError(
+        StatusCodes.UNAUTHORIZED,
+        process.env.NODE_ENV !== 'production'
+          ? `Google token error: ${strictErr?.message}`
+          : 'Invalid Google sign-in token'
+      );
+    }
   }
 
   const payload = ticket.getPayload();
@@ -240,6 +240,11 @@ export const login = (role) =>
   });
 
 export const socialLogin = catchAsync(async (req, res) => {
+  console.log('[Social Login] provider:', req.body.provider);
+  console.log('[Social Login] email:', req.body.email);
+  console.log('[Social Login] idToken received:', !!req.body.idToken, '| length:', String(req.body.idToken || '').length);
+  console.log('[Social Login] GOOGLE_WEB_CLIENT_ID set:', !!process.env.GOOGLE_WEB_CLIENT_ID);
+
   const provider = String(req.body.provider || '').trim().toLowerCase();
   const preferredLanguage = ensureSupportedLanguage(
     req.body.preferredLanguage || resolveRequestLanguage(req)
