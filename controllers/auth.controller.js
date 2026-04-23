@@ -23,6 +23,7 @@ import {
   SESSION_TTL_HOURS
 } from '../services/security.service.js';
 import { resolveImageUrl } from '../services/media.service.js';
+import { sendPasswordResetOtpEmail } from '../services/email.service.js';
 import {
   ensureSupportedLanguage,
   messageFor,
@@ -426,6 +427,11 @@ export const requestPasswordReset = (role) =>
     }
 
     const resetRequest = await createPasswordResetRequest(user);
+    await sendPasswordResetOtpEmail({
+      toEmail: email,
+      otpCode: resetRequest.otpCode,
+      expiresInMinutes: OTP_TTL_MINUTES
+    });
 
     const data = {
       requestId: resetRequest._id,
