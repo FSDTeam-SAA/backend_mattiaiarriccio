@@ -47,15 +47,24 @@ const resolveUserName = (body = {}) =>
 const normalizeName = (firstName, lastName) =>
   `${String(firstName || '').trim()} ${String(lastName || '').trim()}`.trim();
 
-const verifyGoogleProfile = async (idToken) => {
+const verifyGoogleProfile = async ({ idToken, accessToken }) => {
   const cleanedIdToken = String(idToken || '').trim();
+  const cleanedAccessToken = String(accessToken || '').trim();
 
-  if (!cleanedIdToken) {
-    throw new ApiError(StatusCodes.BAD_REQUEST, 'Google idToken is required');
+  if (!cleanedIdToken && !cleanedAccessToken) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'Google idToken or accessToken is required'
+    );
   }
 
   const webClientId = (process.env.GOOGLE_WEB_CLIENT_ID || '').trim();
   const androidClientId = (process.env.GOOGLE_ANDROID_CLIENT_ID || '').trim();
+  const iosClientId = (process.env.GOOGLE_IOS_CLIENT_ID || '').trim();
+  const additionalClientIds = String(process.env.GOOGLE_ALLOWED_CLIENT_IDS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 
   if (!webClientId) {
     throw new ApiError(
@@ -64,57 +73,95 @@ const verifyGoogleProfile = async (idToken) => {
     );
   }
 
-  // Audience covers both Web and Android client IDs since the token aud depends on
-  // how the client was configured (serverClientId on Flutter side).
-  const audience = [webClientId, androidClientId].filter(Boolean);
-  const client = new OAuth2Client(webClientId);
+  const allowedAudiences = Array.from(
+    new Set([webClientId, androidClientId, iosClientId, ...additionalClientIds].filter(Boolean))
+  );
 
-  let ticket;
+  if (cleanedIdToken) {
+    const client = new OAuth2Client(webClientId);
+    let ticket;
 
-  // Try 1: strict audience check
-  try {
-    ticket = await client.verifyIdToken({ idToken: cleanedIdToken, audience });
-  } catch (strictErr) {
-    console.error('[Google Auth] Strict verify failed:', strictErr?.message);
-    console.error('[Google Auth] Trying without audience restriction...');
-
-    // Try 2: truly no audience restriction — new OAuth2Client() has no clientId,
-    // so the library skips the aud check entirely (handles Android token aud mismatch)
     try {
-      ticket = await new OAuth2Client().verifyIdToken({ idToken: cleanedIdToken });
-      const p = ticket.getPayload();
-      console.log('[Google Auth] Fallback verify succeeded. Token aud:', p?.aud);
-    } catch (fallbackErr) {
-      console.error('[Google Auth] Fallback verify also failed:', fallbackErr?.message);
-      throw new ApiError(
-        StatusCodes.UNAUTHORIZED,
-        process.env.NODE_ENV !== 'production'
-          ? `Google token error: ${strictErr?.message}`
-          : 'Invalid Google sign-in token'
-      );
+      ticket = await client.verifyIdToken({
+        idToken: cleanedIdToken,
+        audience: allowedAudiences
+      });
+    } catch (strictErr) {
+      console.error('[Google Auth] ID token verify failed:', strictErr?.message);
+
+      if (!cleanedAccessToken) {
+        throw new ApiError(
+          StatusCodes.UNAUTHORIZED,
+          process.env.NODE_ENV !== 'production'
+            ? `Google token error: ${strictErr?.message}`
+            : 'Invalid Google sign-in token'
+        );
+      }
+    }
+
+    if (ticket) {
+      const payload = ticket.getPayload();
+
+      if (!payload?.email) {
+        throw new ApiError(StatusCodes.UNAUTHORIZED, 'Google account email is missing');
+      }
+
+      if (payload.email_verified === false) {
+        throw new ApiError(StatusCodes.UNAUTHORIZED, 'Google account email is not verified');
+      }
+
+      const email = ensureEmail(payload.email);
+      const fullName =
+        String(payload.name || normalizeName(payload.given_name, payload.family_name)).trim() ||
+        email.split('@')[0];
+
+      return {
+        email,
+        fullName,
+        avatarUrl: String(payload.picture || '').trim()
+      };
     }
   }
 
-  const payload = ticket.getPayload();
+  // Fallback path: verify Google access token and fetch canonical user profile.
+  // This supports clients/environments where ID token verification is unavailable.
+  try {
+    const profileResponse = await new OAuth2Client().request({
+      url: 'https://www.googleapis.com/oauth2/v3/userinfo',
+      headers: { Authorization: `Bearer ${cleanedAccessToken}` }
+    });
+    const profile = profileResponse.data || {};
 
-  if (!payload?.email) {
-    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Google account email is missing');
+    if (!profile?.email) {
+      throw new ApiError(StatusCodes.UNAUTHORIZED, 'Google account email is missing');
+    }
+
+    if (profile.email_verified === false) {
+      throw new ApiError(StatusCodes.UNAUTHORIZED, 'Google account email is not verified');
+    }
+
+    const email = ensureEmail(profile.email);
+    const fullName =
+      String(profile.name || normalizeName(profile.given_name, profile.family_name)).trim() ||
+      email.split('@')[0];
+
+    return {
+      email,
+      fullName,
+      avatarUrl: String(profile.picture || '').trim()
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    throw new ApiError(
+      StatusCodes.UNAUTHORIZED,
+      process.env.NODE_ENV !== 'production'
+        ? `Google access token error: ${error?.message || 'Unknown error'}`
+        : 'Invalid Google sign-in token'
+    );
   }
-
-  if (payload.email_verified === false) {
-    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Google account email is not verified');
-  }
-
-  const email = ensureEmail(payload.email);
-  const fullName =
-    String(payload.name || normalizeName(payload.given_name, payload.family_name)).trim() ||
-    email.split('@')[0];
-
-  return {
-    email,
-    fullName,
-    avatarUrl: String(payload.picture || '').trim()
-  };
 };
 
 const createSessionPayload = async (user) => {
@@ -240,9 +287,22 @@ export const login = (role) =>
   });
 
 export const socialLogin = catchAsync(async (req, res) => {
+  const idToken = pickFirstDefined(req.body, ['idToken', 'id_token', 'token']);
+  const accessToken = pickFirstDefined(req.body, [
+    'accessToken',
+    'access_token',
+    'googleAccessToken'
+  ]);
+
   console.log('[Social Login] provider:', req.body.provider);
   console.log('[Social Login] email:', req.body.email);
-  console.log('[Social Login] idToken received:', !!req.body.idToken, '| length:', String(req.body.idToken || '').length);
+  console.log('[Social Login] idToken received:', !!idToken, '| length:', idToken.length);
+  console.log(
+    '[Social Login] accessToken received:',
+    !!accessToken,
+    '| length:',
+    accessToken.length
+  );
   console.log('[Social Login] GOOGLE_WEB_CLIENT_ID set:', !!process.env.GOOGLE_WEB_CLIENT_ID);
 
   const provider = String(req.body.provider || '').trim().toLowerCase();
@@ -258,7 +318,7 @@ export const socialLogin = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'Unsupported social provider');
   }
 
-  const googleProfile = await verifyGoogleProfile(req.body.idToken);
+  const googleProfile = await verifyGoogleProfile({ idToken, accessToken });
   const email = googleProfile.email;
   const fullName = googleProfile.fullName;
   const avatarUrl =
