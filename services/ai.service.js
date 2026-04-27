@@ -16,17 +16,27 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5-mini';
 export const DEFAULT_AI_EMERGENCY_TYPE = 'General Emergency';
 
 let openaiClient = null;
+let warnedMissingKey = false;
 
 const getOpenAIClient = () => {
   if (openaiClient) return openaiClient;
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
+    if (!warnedMissingKey) {
+      console.error(
+        '[ai.service] ❌ OPENAI_API_KEY is missing. ' +
+          'Create a .env file in the project root with OPENAI_API_KEY=sk-... ' +
+          '(optionally OPENAI_MODEL). All AI requests will return the offline fallback until this is set.'
+      );
+      warnedMissingKey = true;
+    }
     const error = new Error('OPENAI_API_KEY is not configured');
     error.code = 'OPENAI_NOT_CONFIGURED';
     throw error;
   }
 
+  console.log(`[ai.service] ✅ OpenAI client initialised (model=${OPENAI_MODEL})`);
   openaiClient = new OpenAI({ apiKey });
   return openaiClient;
 };
@@ -100,20 +110,31 @@ export const requestAiReply = async ({
 
   try {
     const client = getOpenAIClient();
+    const startedAt = Date.now();
     const completion = await client.chat.completions.create({
       model: OPENAI_MODEL,
       messages,
-      max_completion_tokens: 300,
+      max_completion_tokens: 1500,
       reasoning_effort: 'minimal',
       verbosity: 'low'
     });
 
     const reply = completion?.choices?.[0]?.message?.content || '';
+    const elapsedMs = Date.now() - startedAt;
 
     if (!reply.trim()) {
-      console.warn('[ai.service] OpenAI returned empty reply, serving offline fallback.');
+      console.warn(
+        `[ai.service] ⚠️ OpenAI returned empty reply in ${elapsedMs}ms ` +
+          `(model=${completion?.model || OPENAI_MODEL}, id=${completion?.id || 'n/a'}, ` +
+          `finish=${completion?.choices?.[0]?.finish_reason || 'n/a'}) — serving offline fallback.`
+      );
       return offlineFallback();
     }
+
+    console.log(
+      `[ai.service] ✅ OpenAI reply ok (model=${completion?.model || OPENAI_MODEL}, ` +
+        `id=${completion?.id || 'n/a'}, ${elapsedMs}ms, ${reply.length} chars)`
+    );
 
     return {
       reply,
@@ -129,9 +150,22 @@ export const requestAiReply = async ({
       error?.message ||
       'OpenAI request failed';
 
+    const status = error?.status || error?.response?.status || 'n/a';
+    const code = error?.code || error?.error?.code || error?.name || 'unknown';
+    const type = error?.type || error?.error?.type || 'n/a';
+
     console.error(
-      `[ai.service] AI backend failure (${error?.code || error?.name || 'unknown'}): ${upstreamMessage}`
+      `[ai.service] ❌ AI provider request failed → falling back to offline guide\n` +
+        `  • model:   ${OPENAI_MODEL}\n` +
+        `  • code:    ${code}\n` +
+        `  • status:  ${status}\n` +
+        `  • type:    ${type}\n` +
+        `  • message: ${upstreamMessage}`
     );
+
+    if (process.env.AI_DEBUG === '1' && error?.stack) {
+      console.error('[ai.service] stack:', error.stack);
+    }
 
     return offlineFallback();
   }
