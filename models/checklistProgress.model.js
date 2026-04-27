@@ -20,6 +20,10 @@ const checklistProgressSchema = new mongoose.Schema(
     completedItemIds: {
       type: [String],
       default: []
+    },
+    hidden: {
+      type: Boolean,
+      default: false
     }
   },
   {

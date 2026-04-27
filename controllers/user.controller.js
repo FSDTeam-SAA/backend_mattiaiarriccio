@@ -81,9 +81,16 @@ export const updateCurrentUser = catchAsync(async (req, res) => {
   }
 
   const providedUserName = getProvidedUserName(req.body);
+  const hasExplicitLastName = Object.prototype.hasOwnProperty.call(req.body, 'lastName');
   const nextFirstName = providedUserName !== undefined ? providedUserName : user.firstName;
-  const nextLastName =
-    req.body.lastName !== undefined ? String(req.body.lastName).trim() : user.lastName;
+  let nextLastName = hasExplicitLastName ? String(req.body.lastName || '').trim() : user.lastName;
+
+  // Mobile edit profile currently submits one full-name field only.
+  // When that full name is provided without an explicit lastName, clear stale lastName
+  // to prevent duplicated display values like "Aliul Akon A Akon".
+  if (providedUserName !== undefined && !hasExplicitLastName && /\s/.test(providedUserName)) {
+    nextLastName = '';
+  }
 
   if (!nextFirstName) {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'Username is required');
@@ -231,6 +238,16 @@ export const getHome = catchAsync(async (req, res) => {
       Notification.countDocuments({ userId, read: false }),
       getManagedCategoryNames()
     ]);
+  const hiddenTemplateChecklistIds = new Set(
+    progressEntries
+      .filter((entry) => entry.hidden)
+      .map((entry) => entry.checklistId)
+  );
+  const visibleChecklists = checklists.filter(
+    (checklist) =>
+      checklist.type !== 'template' ||
+      !hiddenTemplateChecklistIds.has(checklist._id)
+  );
 
   sendSuccess(res, {
     message: messageFor(language, 'homeFetched'),
@@ -269,7 +286,7 @@ export const getHome = catchAsync(async (req, res) => {
         thumbnailUrl: tip.thumbnailUrl,
         estimatedReadMinutes: tip.estimatedReadMinutes
       })),
-      checklistSummary: checklistProgressSummary(checklists, progressEntries),
+      checklistSummary: checklistProgressSummary(visibleChecklists, progressEntries),
       chatHistoryPreview: conversations.map(conversationSummary),
       categories,
       unreadNotifications

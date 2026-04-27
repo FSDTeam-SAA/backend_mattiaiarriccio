@@ -38,6 +38,9 @@ const userCanAccessChecklist = (checklist, userId) =>
 const userCanEditChecklist = (checklist, userId) =>
   checklist && checklist.type === 'custom' && checklist.ownerId === userId;
 
+const isChecklistHiddenForUser = (checklist, progress) =>
+  checklist?.type === 'template' && checklist?.status === 'published' && Boolean(progress?.hidden);
+
 const formatChecklist = (checklist, progress) => {
   const completedItemIds = new Set(progress?.completedItemIds || []);
   const items = checklist.items
@@ -96,14 +99,23 @@ export const listChecklists = catchAsync(async (req, res) => {
   const category = String(req.query.category || '').trim().toLowerCase();
   const userId = req.auth.user._id;
 
-  let checklists = await Checklist.find({
-    $or: [
-      { type: 'template', status: 'published' },
-      { type: 'custom', ownerId: userId }
-    ]
-  })
-    .sort({ updatedAt: -1 })
-    .lean();
+  const [fetchedChecklists, progressEntries, managedCategories] = await Promise.all([
+    Checklist.find({
+      $or: [
+        { type: 'template', status: 'published' },
+        { type: 'custom', ownerId: userId }
+      ]
+    })
+      .sort({ updatedAt: -1 })
+      .lean(),
+    ChecklistProgress.find({ userId }).lean(),
+    getManagedCategoryNames()
+  ]);
+  const progressMap = new Map(progressEntries.map((entry) => [entry.checklistId, entry]));
+  let checklists = fetchedChecklists.filter((checklist) => {
+    if (checklist.type !== 'template') return true;
+    return !isChecklistHiddenForUser(checklist, progressMap.get(checklist._id));
+  });
 
   if (category) {
     checklists = checklists.filter(
@@ -120,11 +132,6 @@ export const listChecklists = catchAsync(async (req, res) => {
     );
   }
 
-  const [progressEntries, managedCategories] = await Promise.all([
-    ChecklistProgress.find({ userId }).lean(),
-    getManagedCategoryNames()
-  ]);
-  const progressMap = new Map(progressEntries.map((entry) => [entry.checklistId, entry]));
   const categories = [...new Set([...managedCategories, ...checklists.map((item) => item.category)])]
     .filter(Boolean)
     .sort();
@@ -141,16 +148,21 @@ export const listChecklists = catchAsync(async (req, res) => {
 });
 
 export const getChecklistById = catchAsync(async (req, res) => {
+  const userId = req.auth.user._id;
   const checklist = await Checklist.findById(req.params.checklistId).lean();
 
-  if (!userCanAccessChecklist(checklist, req.auth.user._id)) {
+  if (!userCanAccessChecklist(checklist, userId)) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
   }
 
   const progress = await ChecklistProgress.findOne({
-    userId: req.auth.user._id,
+    userId,
     checklistId: checklist._id
   }).lean();
+
+  if (isChecklistHiddenForUser(checklist, progress)) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
+  }
 
   sendSuccess(res, {
     message: 'Checklist fetched successfully',
@@ -271,18 +283,51 @@ export const updateChecklist = catchAsync(async (req, res) => {
 });
 
 export const deleteChecklist = catchAsync(async (req, res) => {
+  const userId = req.auth.user._id;
   const checklist = await Checklist.findById(req.params.checklistId);
 
-  if (!userCanEditChecklist(checklist, req.auth.user._id)) {
-    throw new ApiError(StatusCodes.FORBIDDEN, 'Only your custom checklists can be deleted');
+  if (!checklist) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
   }
 
-  await Checklist.deleteOne({ _id: checklist._id });
-  await ChecklistProgress.deleteMany({ checklistId: checklist._id });
+  if (checklist.type === 'custom') {
+    if (!userCanEditChecklist(checklist, userId)) {
+      throw new ApiError(StatusCodes.FORBIDDEN, 'Only your custom checklists can be deleted');
+    }
 
-  sendSuccess(res, {
-    message: 'Checklist deleted successfully'
-  });
+    await Checklist.deleteOne({ _id: checklist._id });
+    await ChecklistProgress.deleteMany({ checklistId: checklist._id });
+
+    sendSuccess(res, {
+      message: 'Checklist deleted successfully'
+    });
+    return;
+  }
+
+  if (checklist.type === 'template' && checklist.status === 'published') {
+    await ChecklistProgress.updateOne(
+      { userId, checklistId: checklist._id },
+      {
+        $set: {
+          hidden: true
+        },
+        $setOnInsert: {
+          _id: createId('progress'),
+          userId,
+          checklistId: checklist._id,
+          completedItemIds: []
+        }
+      },
+      { upsert: true }
+    );
+
+    sendSuccess(res, {
+      message: 'Checklist removed from your list'
+    });
+    return;
+  }
+
+  throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
 });
 
 export const addChecklistItem = catchAsync(async (req, res) => {
@@ -319,9 +364,19 @@ export const addChecklistItem = catchAsync(async (req, res) => {
 });
 
 export const updateChecklistItem = catchAsync(async (req, res) => {
+  const userId = req.auth.user._id;
   const checklist = await Checklist.findById(req.params.checklistId);
 
-  if (!userCanAccessChecklist(checklist, req.auth.user._id)) {
+  if (!userCanAccessChecklist(checklist, userId)) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
+  }
+
+  let progress = await ChecklistProgress.findOne({
+    userId,
+    checklistId: checklist._id
+  });
+
+  if (isChecklistHiddenForUser(checklist, progress)) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
   }
 
@@ -332,7 +387,7 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
   }
 
   if (req.body.text !== undefined) {
-    if (!userCanEditChecklist(checklist, req.auth.user._id)) {
+    if (!userCanEditChecklist(checklist, userId)) {
       throw new ApiError(StatusCodes.FORBIDDEN, 'Only custom checklist items can be edited');
     }
 
@@ -346,7 +401,7 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
   }
 
   if (req.body.icon !== undefined || req.body.iconEmoji !== undefined) {
-    if (!userCanEditChecklist(checklist, req.auth.user._id)) {
+    if (!userCanEditChecklist(checklist, userId)) {
       throw new ApiError(StatusCodes.FORBIDDEN, 'Only custom checklist items can be edited');
     }
     item.icon = String(
@@ -354,7 +409,9 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
     ).trim();
   }
 
-  let progress = await getOrCreateChecklistProgress(req.auth.user._id, checklist._id);
+  if (!progress) {
+    progress = await getOrCreateChecklistProgress(userId, checklist._id);
+  }
 
   if (req.body.completed !== undefined || req.body.toggle === true) {
     const completedSet = new Set(progress.completedItemIds);
@@ -397,7 +454,8 @@ export const deleteChecklistItem = catchAsync(async (req, res) => {
     .map((entry, index) => ({
       _id: entry._id,
       text: entry.text,
-      order: index + 1
+      order: index + 1,
+      icon: entry.icon || ''
     }));
   await checklist.save();
 
