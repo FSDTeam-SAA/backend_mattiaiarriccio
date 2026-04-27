@@ -6,12 +6,15 @@ import ApiError from '../utils/ApiError.js';
 const DEFAULT_CLOUDINARY_ERROR =
   'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET first.';
 
+export const isCloudinaryConfigured = () =>
+  Boolean(
+    process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET
+  );
+
 export const ensureCloudinaryConfigured = () => {
-  if (
-    !process.env.CLOUDINARY_CLOUD_NAME ||
-    !process.env.CLOUDINARY_API_KEY ||
-    !process.env.CLOUDINARY_API_SECRET
-  ) {
+  if (!isCloudinaryConfigured()) {
     throw new ApiError(StatusCodes.SERVICE_UNAVAILABLE, DEFAULT_CLOUDINARY_ERROR);
   }
 };
@@ -75,19 +78,47 @@ export const getUploadedFile = (req, ...fieldNames) => {
   return req.file || null;
 };
 
+const REMOVE_TOKENS = new Set(['__remove__', 'remove', 'null', 'none', 'clear', 'true', '1']);
+
+const isRemovalSignal = (value) => {
+  if (value === null) return true;
+  if (value === true) return true;
+  if (typeof value !== 'string') return false;
+  return REMOVE_TOKENS.has(value.trim().toLowerCase());
+};
+
 export const resolveImageUrl = async ({
   req,
   folder,
   fieldNames = [],
   bodyValue,
   currentValue,
-  defaultValue
+  defaultValue,
+  removeKey
 }) => {
   const uploadedFile = getUploadedFile(req, ...fieldNames);
 
   if (uploadedFile) {
-    const uploadResult = await uploadImageFile(uploadedFile, folder);
-    return uploadResult.secure_url;
+    try {
+      const uploadResult = await uploadImageFile(uploadedFile, folder);
+      if (uploadResult?.secure_url) {
+        return uploadResult.secure_url;
+      }
+    } catch (error) {
+      console.error(
+        `[media.service] Image upload failed for folder "${folder}":`,
+        error?.message || error
+      );
+      // Fall through to body/current/default so the request never dead-ends.
+    }
+  }
+
+  if (removeKey && req?.body && isRemovalSignal(req.body[removeKey])) {
+    return defaultValue !== undefined ? defaultValue : '';
+  }
+
+  if (isRemovalSignal(bodyValue)) {
+    return defaultValue !== undefined ? defaultValue : '';
   }
 
   if (bodyValue !== undefined) {

@@ -16,14 +16,16 @@ const normalizeItems = (items = []) =>
         return {
           _id: createId('item'),
           text: item.trim(),
-          order: index + 1
+          order: index + 1,
+          icon: ''
         };
       }
 
       return {
         _id: item._id || item.id || createId('item'),
         text: String(item.text || '').trim(),
-        order: Number.isFinite(item.order) ? item.order : index + 1
+        order: Number.isFinite(item.order) ? item.order : index + 1,
+        icon: String(item.icon || '').trim()
       };
     })
     .filter((item) => item.text);
@@ -45,6 +47,7 @@ const formatChecklist = (checklist, progress) => {
       id: item._id,
       text: item.text,
       order: item.order,
+      icon: item.icon || '',
       completed: completedItemIds.has(item._id)
     }));
   const completedCount = items.filter((item) => item.completed).length;
@@ -58,6 +61,7 @@ const formatChecklist = (checklist, progress) => {
     category: checklist.category,
     description: checklist.description,
     iconUrl: checklist.iconUrl,
+    icon: checklist.icon || '',
     coverImageUrl: checklist.coverImageUrl,
     status: checklist.status,
     createdBy: checklist.createdBy,
@@ -165,15 +169,17 @@ export const createChecklist = catchAsync(async (req, res) => {
   const iconUrl = await resolveImageUrl({
     req,
     folder: 'checklists/icons',
-    fieldNames: ['icon', 'iconImage', 'iconUrl'],
+    fieldNames: ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
     bodyValue: req.body.iconUrl,
+    removeKey: 'removeIconUrl',
     defaultValue: 'https://placehold.co/128x128/png?text=CUSTOM'
   });
   const coverImageUrl = await resolveImageUrl({
     req,
     folder: 'checklists/covers',
-    fieldNames: ['coverImage', 'cover', 'coverImageUrl'],
+    fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
     bodyValue: req.body.coverImageUrl,
+    removeKey: 'removeCoverImageUrl',
     defaultValue: 'https://placehold.co/1200x800/png?text=Custom+Checklist'
   });
 
@@ -185,6 +191,7 @@ export const createChecklist = catchAsync(async (req, res) => {
     category: String(req.body.category || 'Custom').trim(),
     description: String(req.body.description || '').trim(),
     iconUrl,
+    icon: String(req.body.iconEmoji || req.body.icon_text || '').trim(),
     coverImageUrl,
     status: 'published',
     createdBy: req.auth.user._id,
@@ -224,18 +231,27 @@ export const updateChecklist = catchAsync(async (req, res) => {
   checklist.iconUrl = await resolveImageUrl({
     req,
     folder: 'checklists/icons',
-    fieldNames: ['icon', 'iconImage', 'iconUrl'],
+    fieldNames: ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
     bodyValue: req.body.iconUrl,
+    removeKey: 'removeIconUrl',
     currentValue: checklist.iconUrl
   });
 
   checklist.coverImageUrl = await resolveImageUrl({
     req,
     folder: 'checklists/covers',
-    fieldNames: ['coverImage', 'cover', 'coverImageUrl'],
+    fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
     bodyValue: req.body.coverImageUrl,
+    removeKey: 'removeCoverImageUrl',
     currentValue: checklist.coverImageUrl
   });
+
+  if (req.body.iconEmoji !== undefined || req.body.icon_text !== undefined) {
+    const nextIcon = String(
+      req.body.iconEmoji !== undefined ? req.body.iconEmoji : req.body.icon_text
+    ).trim();
+    checklist.icon = nextIcon;
+  }
 
   if (req.body.items !== undefined) {
     checklist.items = normalizeItems(parseArrayInput(req.body.items) || []);
@@ -285,7 +301,8 @@ export const addChecklistItem = catchAsync(async (req, res) => {
   checklist.items.push({
     _id: createId('item'),
     text,
-    order: checklist.items.length + 1
+    order: checklist.items.length + 1,
+    icon: String(req.body.icon || req.body.iconEmoji || '').trim()
   });
   await checklist.save();
 
@@ -326,6 +343,15 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
     }
 
     item.text = nextText;
+  }
+
+  if (req.body.icon !== undefined || req.body.iconEmoji !== undefined) {
+    if (!userCanEditChecklist(checklist, req.auth.user._id)) {
+      throw new ApiError(StatusCodes.FORBIDDEN, 'Only custom checklist items can be edited');
+    }
+    item.icon = String(
+      req.body.icon !== undefined ? req.body.icon : req.body.iconEmoji
+    ).trim();
   }
 
   let progress = await getOrCreateChecklistProgress(req.auth.user._id, checklist._id);

@@ -33,14 +33,16 @@ const normalizeItems = (items = []) =>
         return {
           _id: createId('item'),
           text: item.trim(),
-          order: index + 1
+          order: index + 1,
+          icon: ''
         };
       }
 
       return {
         _id: item._id || item.id || createId('item'),
         text: String(item.text || '').trim(),
-        order: Number.isFinite(item.order) ? item.order : index + 1
+        order: Number.isFinite(item.order) ? item.order : index + 1,
+        icon: String(item.icon || '').trim()
       };
     })
     .filter((item) => item.text);
@@ -74,6 +76,7 @@ const mapChecklistPayload = (checklist) => ({
   category: checklist.category,
   description: checklist.description,
   iconUrl: checklist.iconUrl,
+  icon: checklist.icon || '',
   coverImageUrl: checklist.coverImageUrl,
   status: checklist.status,
   createdBy: checklist.createdBy,
@@ -81,7 +84,8 @@ const mapChecklistPayload = (checklist) => ({
   items: checklist.items.map((item) => ({
     id: item._id,
     text: item.text,
-    order: item.order
+    order: item.order,
+    icon: item.icon || ''
   })),
   createdAt: checklist.createdAt,
   updatedAt: checklist.updatedAt
@@ -251,8 +255,9 @@ export const updateAdminSettings = catchAsync(async (req, res) => {
   admin.avatarUrl = await resolveImageUrl({
     req,
     folder: 'admins/avatars',
-    fieldNames: ['avatar', 'avatarImage', 'avatarUrl'],
+    fieldNames: ['avatar', 'avatarImage', 'avatarImageFile', 'avatarUrl'],
     bodyValue: req.body.avatarUrl,
+    removeKey: 'removeAvatarUrl',
     currentValue: admin.avatarUrl
   });
 
@@ -324,15 +329,17 @@ export const createAdminChecklist = catchAsync(async (req, res) => {
   const iconUrl = await resolveImageUrl({
     req,
     folder: 'checklists/icons',
-    fieldNames: ['icon', 'iconImage', 'iconUrl'],
+    fieldNames: ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
     bodyValue: req.body.iconUrl,
+    removeKey: 'removeIconUrl',
     defaultValue: 'https://placehold.co/128x128/png?text=TEMPLATE'
   });
   const coverImageUrl = await resolveImageUrl({
     req,
     folder: 'checklists/covers',
-    fieldNames: ['coverImage', 'cover', 'coverImageUrl'],
+    fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
     bodyValue: req.body.coverImageUrl,
+    removeKey: 'removeCoverImageUrl',
     defaultValue: 'https://placehold.co/1200x800/png?text=Checklist'
   });
 
@@ -344,6 +351,7 @@ export const createAdminChecklist = catchAsync(async (req, res) => {
     category: await resolveManagedCategoryName(req.body.category),
     description: String(req.body.description || '').trim(),
     iconUrl,
+    icon: String(req.body.iconEmoji || req.body.icon_text || '').trim(),
     coverImageUrl,
     status: String(req.body.status || 'published').trim(),
     createdBy: req.auth.user._id,
@@ -393,18 +401,27 @@ export const updateAdminChecklist = catchAsync(async (req, res) => {
   checklist.iconUrl = await resolveImageUrl({
     req,
     folder: 'checklists/icons',
-    fieldNames: ['icon', 'iconImage', 'iconUrl'],
+    fieldNames: ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
     bodyValue: req.body.iconUrl,
+    removeKey: 'removeIconUrl',
     currentValue: checklist.iconUrl
   });
 
   checklist.coverImageUrl = await resolveImageUrl({
     req,
     folder: 'checklists/covers',
-    fieldNames: ['coverImage', 'cover', 'coverImageUrl'],
+    fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
     bodyValue: req.body.coverImageUrl,
+    removeKey: 'removeCoverImageUrl',
     currentValue: checklist.coverImageUrl
   });
+
+  if (req.body.iconEmoji !== undefined || req.body.icon_text !== undefined) {
+    const nextIcon = String(
+      req.body.iconEmoji !== undefined ? req.body.iconEmoji : req.body.icon_text
+    ).trim();
+    checklist.icon = nextIcon;
+  }
 
   if (req.body.status !== undefined) {
     checklist.status = String(req.body.status).trim();
@@ -478,15 +495,17 @@ export const createAdminSafetyTip = catchAsync(async (req, res) => {
   const coverImageUrl = await resolveImageUrl({
     req,
     folder: 'safety-tips/covers',
-    fieldNames: ['coverImage', 'cover', 'coverImageUrl'],
+    fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
     bodyValue: req.body.coverImageUrl,
+    removeKey: 'removeCoverImageUrl',
     defaultValue: 'https://placehold.co/1200x800/png?text=Safety+Tip'
   });
   const thumbnailUrl = await resolveImageUrl({
     req,
     folder: 'safety-tips/thumbnails',
-    fieldNames: ['thumbnail', 'thumbnailImage', 'thumbnailUrl'],
+    fieldNames: ['thumbnail', 'thumbnailImage', 'thumbnailImageFile', 'thumbnailUrl'],
     bodyValue: req.body.thumbnailUrl,
+    removeKey: 'removeThumbnailUrl',
     defaultValue: 'https://placehold.co/600x400/png?text=Safety+Tip'
   });
 
@@ -595,16 +614,18 @@ export const updateAdminSafetyTip = catchAsync(async (req, res) => {
   tip.coverImageUrl = await resolveImageUrl({
     req,
     folder: 'safety-tips/covers',
-    fieldNames: ['coverImage', 'cover', 'coverImageUrl'],
+    fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
     bodyValue: req.body.coverImageUrl,
+    removeKey: 'removeCoverImageUrl',
     currentValue: tip.coverImageUrl
   });
 
   tip.thumbnailUrl = await resolveImageUrl({
     req,
     folder: 'safety-tips/thumbnails',
-    fieldNames: ['thumbnail', 'thumbnailImage', 'thumbnailUrl'],
+    fieldNames: ['thumbnail', 'thumbnailImage', 'thumbnailImageFile', 'thumbnailUrl'],
     bodyValue: req.body.thumbnailUrl,
+    removeKey: 'removeThumbnailUrl',
     currentValue: tip.thumbnailUrl
   });
 

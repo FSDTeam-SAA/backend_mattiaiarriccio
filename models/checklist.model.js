@@ -15,6 +15,11 @@ const checklistItemSchema = new mongoose.Schema(
     order: {
       type: Number,
       required: true
+    },
+    icon: {
+      type: String,
+      default: '',
+      trim: true
     }
   },
   {
@@ -56,6 +61,11 @@ const checklistSchema = new mongoose.Schema(
     iconUrl: {
       type: String,
       default: ''
+    },
+    icon: {
+      type: String,
+      default: '',
+      trim: true
     },
     coverImageUrl: {
       type: String,

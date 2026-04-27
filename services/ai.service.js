@@ -7,6 +7,7 @@ import {
   DEFAULT_SYSTEM_INSTRUCTION,
   DEFAULT_FALLBACK_RESPONSE,
   buildSystemMessage,
+  buildOfflineEmergencyGuide,
   languageInstructionFor,
   normalizeLanguage
 } from './aiPrompts.js';
@@ -21,10 +22,9 @@ const getOpenAIClient = () => {
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    throw new ApiError(
-      StatusCodes.INTERNAL_SERVER_ERROR,
-      'OPENAI_API_KEY is not configured'
-    );
+    const error = new Error('OPENAI_API_KEY is not configured');
+    error.code = 'OPENAI_NOT_CONFIGURED';
+    throw error;
   }
 
   openaiClient = new OpenAI({ apiKey });
@@ -79,6 +79,25 @@ export const requestAiReply = async ({
     { role: 'user', content: String(query || '') }
   ];
 
+  const offlineFallback = () => {
+    const reply =
+      buildOfflineEmergencyGuide({
+        emergencyType: resolvedEmergencyType,
+        language: lang
+      }) ||
+      config.fallbackMessage ||
+      DEFAULT_FALLBACK_RESPONSE;
+
+    return {
+      reply,
+      raw: {
+        id: null,
+        model: 'offline-emergency-guide'
+      },
+      degraded: true
+    };
+  };
+
   try {
     const client = getOpenAIClient();
     const completion = await client.chat.completions.create({
@@ -91,6 +110,11 @@ export const requestAiReply = async ({
 
     const reply = completion?.choices?.[0]?.message?.content || '';
 
+    if (!reply.trim()) {
+      console.warn('[ai.service] OpenAI returned empty reply, serving offline fallback.');
+      return offlineFallback();
+    }
+
     return {
       reply,
       raw: {
@@ -99,18 +123,17 @@ export const requestAiReply = async ({
       }
     };
   } catch (error) {
-    if (error instanceof ApiError) throw error;
-
     const upstreamMessage =
       error?.error?.message ||
       error?.response?.data?.error?.message ||
       error?.message ||
       'OpenAI request failed';
 
-    throw new ApiError(
-      StatusCodes.BAD_GATEWAY,
-      `AI backend: ${upstreamMessage}`
+    console.error(
+      `[ai.service] AI backend failure (${error?.code || error?.name || 'unknown'}): ${upstreamMessage}`
     );
+
+    return offlineFallback();
   }
 };
 

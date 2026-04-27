@@ -257,7 +257,8 @@ export const sendChatMessage = catchAsync(async (req, res) => {
         content: assistantMessage.content,
         createdAt: assistantMessage.createdAt
       },
-      aiSource: getAiServiceInfo()
+      aiSource: getAiServiceInfo(),
+      degraded: Boolean(aiResponse?.degraded)
     }
   });
 });
