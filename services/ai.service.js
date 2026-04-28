@@ -133,7 +133,7 @@ export const requestAiReply = async ({
     const completion = await client.chat.completions.create({
       model: OPENAI_MODEL,
       messages,
-      max_completion_tokens: 1500,
+      max_completion_tokens: 1200,
       reasoning_effort: 'minimal',
       verbosity: 'low'
     });

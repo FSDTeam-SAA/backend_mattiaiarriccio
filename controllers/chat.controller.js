@@ -11,7 +11,6 @@ import { sendSuccess } from '../utils/response.js';
 import { summarizeText } from '../services/security.service.js';
 import { createId } from '../lib/id.js';
 import {
-  languageInstructionFor,
   messageFor,
   resolveRequestLanguage
 } from '../services/language.service.js';
@@ -81,7 +80,7 @@ const buildAiQuery = ({
   language,
   isNewConversation
 }) => {
-  const history = conversation?.messages?.slice(-6) || [];
+  const history = conversation?.messages?.slice(-4) || [];
   const selectedEmergencyType = normalizeEmergencyType(
     emergencyType || conversation?.emergencyType
   );
@@ -95,11 +94,7 @@ const buildAiQuery = ({
     : '';
 
   if (history.length === 0) {
-    return [
-      languageInstructionFor(language),
-      emergencyContext,
-      `Latest user request:\n${latestMessage}`
-    ]
+    return [emergencyContext, `Latest user request:\n${latestMessage}`]
       .filter(Boolean)
       .join('\n\n');
   }
@@ -109,9 +104,8 @@ const buildAiQuery = ({
     .join('\n');
 
   return [
-    languageInstructionFor(language),
     emergencyContext,
-    'Use the recent emergency conversation context below if it is relevant.',
+    'Recent context:',
     formattedHistory,
     `Latest user request:\n${latestMessage}`
   ]

@@ -261,15 +261,15 @@ Welcome Style:
 ${welcomeInstruction}`
     : '';
 
-  return `${systemInstruction}
+  return `${systemInstruction}${welcomeBlock}
+
+Fallback:
+${fallbackMessage}
 
 SELECTED LANGUAGE:
 ${languageInstruction}
 
 SELECTED EMERGENCY TYPE:
-${emergencyType}${welcomeBlock}
-
-Fallback:
-${fallbackMessage}
+${emergencyType}
 `.trim();
 };
