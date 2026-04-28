@@ -30,16 +30,17 @@ const normalizeItems = (items = []) =>
     })
     .filter((item) => item.text);
 
+const isSharedChecklist = (checklist) =>
+  checklist && checklist.status === 'published' && !checklist.ownerId;
+
 const userCanAccessChecklist = (checklist, userId) =>
-  checklist &&
-  ((checklist.type === 'template' && checklist.status === 'published') ||
-    checklist.ownerId === userId);
+  checklist && (isSharedChecklist(checklist) || checklist.ownerId === userId);
 
 const userCanEditChecklist = (checklist, userId) =>
   checklist && checklist.type === 'custom' && checklist.ownerId === userId;
 
 const isChecklistHiddenForUser = (checklist, progress) =>
-  checklist?.type === 'template' && checklist?.status === 'published' && Boolean(progress?.hidden);
+  isSharedChecklist(checklist) && Boolean(progress?.hidden);
 
 const cloneChecklistItems = (items = []) =>
   items.map((item, index) => ({
@@ -103,7 +104,7 @@ const resolveChecklistForRead = async ({ checklistId, userId, lean = true }) => 
     return null;
   }
 
-  if (checklist.type === 'template') {
+  if (isSharedChecklist(checklist)) {
     const personalizedChecklistQuery = Checklist.findOne({
       type: 'custom',
       ownerId: userId,
@@ -128,16 +129,12 @@ const resolveChecklistForEdit = async ({ checklistId, userId }) => {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
   }
 
-  if (checklist.type === 'custom') {
-    if (!userCanEditChecklist(checklist, userId)) {
-      throw new ApiError(StatusCodes.FORBIDDEN, 'Only your custom checklists can be edited');
-    }
-
+  if (userCanEditChecklist(checklist, userId)) {
     return checklist;
   }
 
-  if (checklist.type !== 'template' || checklist.status !== 'published') {
-    throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
+  if (!isSharedChecklist(checklist)) {
+    throw new ApiError(StatusCodes.FORBIDDEN, 'Only your own checklist or a shared default can be edited');
   }
 
   const existingPersonalizedChecklist = await Checklist.findOne({
@@ -176,6 +173,7 @@ const formatChecklist = (checklist, progress) => {
     type: checklist.type,
     ownerId: checklist.ownerId,
     sourceChecklistId: checklist.sourceChecklistId || null,
+    isSharedDefault: isSharedChecklist(checklist),
     title: checklist.title,
     category: checklist.category,
     description: checklist.description,
@@ -218,8 +216,8 @@ export const listChecklists = catchAsync(async (req, res) => {
   const [fetchedChecklists, progressEntries, managedCategories] = await Promise.all([
     Checklist.find({
       $or: [
-        { type: 'template', status: 'published' },
-        { type: 'custom', ownerId: userId }
+        { ownerId: null, status: 'published' },
+        { ownerId: userId }
       ]
     })
       .sort({ updatedAt: -1 })
@@ -429,7 +427,7 @@ export const deleteChecklist = catchAsync(async (req, res) => {
     return;
   }
 
-  if (checklist.type === 'template' && checklist.status === 'published') {
+  if (isSharedChecklist(checklist)) {
     await ChecklistProgress.updateOne(
       { userId, checklistId: checklist._id },
       {
