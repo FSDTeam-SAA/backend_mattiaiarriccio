@@ -69,10 +69,10 @@ export const apiCatalog = {
     {
       name: 'Checklists',
       routes: [
-        { method: 'GET', path: '/checklists', description: 'List template checklists and the current user’s custom checklists with progress.' },
+        { method: 'GET', path: '/checklists', description: 'List shared template checklists and the current user’s custom checklists with progress. When a user has personalized a template, the personalized copy is returned instead of the shared original.' },
         { method: 'POST', path: '/checklists', description: 'Create a custom checklist. Supports multipart image upload via fields `icon` and `coverImage`; send `items` as a JSON string when using multipart.' },
-        { method: 'GET', path: '/checklists/:checklistId', description: 'Fetch checklist detail with completion state.' },
-        { method: 'PATCH', path: '/checklists/:checklistId', description: 'Update a custom checklist title, description, or media. Supports multipart image upload via fields `icon` and `coverImage`; send `items` as a JSON string when using multipart.' },
+        { method: 'GET', path: '/checklists/:checklistId', description: 'Fetch checklist detail with completion state. If the requested shared template has already been personalized by the current user, the personalized copy is returned.' },
+        { method: 'PATCH', path: '/checklists/:checklistId', description: 'Update a custom checklist title, description, items, or media. If the target checklist is a shared template, the first edit automatically creates a personalized custom copy for the current user and applies the update there. Supports multipart image upload via fields `icon` and `coverImage`; send `items` as a JSON string when using multipart.' },
         { method: 'DELETE', path: '/checklists/:checklistId', description: 'Delete a custom checklist.' },
         { method: 'POST', path: '/checklists/:checklistId/items', description: 'Add item to a custom checklist.' },
         { method: 'PATCH', path: '/checklists/:checklistId/items/:itemId', description: 'Toggle completion on any accessible checklist item; edit text on custom items.' },

@@ -41,6 +41,121 @@ const userCanEditChecklist = (checklist, userId) =>
 const isChecklistHiddenForUser = (checklist, progress) =>
   checklist?.type === 'template' && checklist?.status === 'published' && Boolean(progress?.hidden);
 
+const cloneChecklistItems = (items = []) =>
+  items.map((item, index) => ({
+    _id: item._id || item.id || createId('item'),
+    text: String(item.text || '').trim(),
+    order: Number.isFinite(item.order) ? item.order : index + 1,
+    icon: String(item.icon || '').trim()
+  }));
+
+const createPersonalizedChecklistFromTemplate = async ({
+  templateChecklist,
+  userId
+}) => {
+  const personalizedChecklist = await Checklist.create({
+    _id: createId('checklist'),
+    type: 'custom',
+    ownerId: userId,
+    sourceChecklistId: templateChecklist._id,
+    title: templateChecklist.title,
+    category: templateChecklist.category,
+    description: templateChecklist.description,
+    iconUrl: templateChecklist.iconUrl,
+    icon: templateChecklist.icon || '',
+    coverImageUrl: templateChecklist.coverImageUrl,
+    status: 'published',
+    createdBy: userId,
+    items: cloneChecklistItems(templateChecklist.items)
+  });
+
+  const templateProgress = await ChecklistProgress.findOne({
+    userId,
+    checklistId: templateChecklist._id
+  }).lean();
+
+  if (templateProgress) {
+    await ChecklistProgress.updateOne(
+      { userId, checklistId: personalizedChecklist._id },
+      {
+        $set: {
+          completedItemIds: templateProgress.completedItemIds || [],
+          hidden: false
+        },
+        $setOnInsert: {
+          _id: createId('progress'),
+          userId,
+          checklistId: personalizedChecklist._id
+        }
+      },
+      { upsert: true }
+    );
+  }
+
+  return personalizedChecklist;
+};
+
+const resolveChecklistForRead = async ({ checklistId, userId, lean = true }) => {
+  const checklistQuery = Checklist.findById(checklistId);
+  const checklist = lean ? await checklistQuery.lean() : await checklistQuery;
+
+  if (!checklist) {
+    return null;
+  }
+
+  if (checklist.type === 'template') {
+    const personalizedChecklistQuery = Checklist.findOne({
+      type: 'custom',
+      ownerId: userId,
+      sourceChecklistId: checklist._id
+    });
+    const personalizedChecklist = lean
+      ? await personalizedChecklistQuery.lean()
+      : await personalizedChecklistQuery;
+
+    if (personalizedChecklist) {
+      return personalizedChecklist;
+    }
+  }
+
+  return checklist;
+};
+
+const resolveChecklistForEdit = async ({ checklistId, userId }) => {
+  const checklist = await Checklist.findById(checklistId);
+
+  if (!checklist) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
+  }
+
+  if (checklist.type === 'custom') {
+    if (!userCanEditChecklist(checklist, userId)) {
+      throw new ApiError(StatusCodes.FORBIDDEN, 'Only your custom checklists can be edited');
+    }
+
+    return checklist;
+  }
+
+  if (checklist.type !== 'template' || checklist.status !== 'published') {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
+  }
+
+  const existingPersonalizedChecklist = await Checklist.findOne({
+    type: 'custom',
+    ownerId: userId,
+    sourceChecklistId: checklist._id
+  });
+
+  if (existingPersonalizedChecklist) {
+    return existingPersonalizedChecklist;
+  }
+
+  return createPersonalizedChecklistFromTemplate({
+    templateChecklist: checklist.toObject(),
+    userId
+  });
+};
+
 const formatChecklist = (checklist, progress) => {
   const completedItemIds = new Set(progress?.completedItemIds || []);
   const items = checklist.items
@@ -60,6 +175,7 @@ const formatChecklist = (checklist, progress) => {
     id: checklist._id,
     type: checklist.type,
     ownerId: checklist.ownerId,
+    sourceChecklistId: checklist.sourceChecklistId || null,
     title: checklist.title,
     category: checklist.category,
     description: checklist.description,
@@ -112,8 +228,14 @@ export const listChecklists = catchAsync(async (req, res) => {
     getManagedCategoryNames()
   ]);
   const progressMap = new Map(progressEntries.map((entry) => [entry.checklistId, entry]));
+  const personalizedTemplateIds = new Set(
+    fetchedChecklists
+      .filter((checklist) => checklist.type === 'custom' && checklist.sourceChecklistId)
+      .map((checklist) => checklist.sourceChecklistId)
+  );
   let checklists = fetchedChecklists.filter((checklist) => {
     if (checklist.type !== 'template') return true;
+    if (personalizedTemplateIds.has(checklist._id)) return false;
     return !isChecklistHiddenForUser(checklist, progressMap.get(checklist._id));
   });
 
@@ -149,7 +271,10 @@ export const listChecklists = catchAsync(async (req, res) => {
 
 export const getChecklistById = catchAsync(async (req, res) => {
   const userId = req.auth.user._id;
-  const checklist = await Checklist.findById(req.params.checklistId).lean();
+  const checklist = await resolveChecklistForRead({
+    checklistId: req.params.checklistId,
+    userId
+  });
 
   if (!userCanAccessChecklist(checklist, userId)) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
@@ -199,6 +324,7 @@ export const createChecklist = catchAsync(async (req, res) => {
     _id: createId('checklist'),
     type: 'custom',
     ownerId: req.auth.user._id,
+    sourceChecklistId: null,
     title,
     category: String(req.body.category || 'Custom').trim(),
     description: String(req.body.description || '').trim(),
@@ -218,11 +344,10 @@ export const createChecklist = catchAsync(async (req, res) => {
 });
 
 export const updateChecklist = catchAsync(async (req, res) => {
-  const checklist = await Checklist.findById(req.params.checklistId);
-
-  if (!userCanEditChecklist(checklist, req.auth.user._id)) {
-    throw new ApiError(StatusCodes.FORBIDDEN, 'Only your custom checklists can be edited');
-  }
+  const checklist = await resolveChecklistForEdit({
+    checklistId: req.params.checklistId,
+    userId: req.auth.user._id
+  });
 
   if (req.body.title !== undefined) {
     const title = String(req.body.title).trim();
@@ -337,11 +462,10 @@ export const addChecklistItem = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'text is required');
   }
 
-  const checklist = await Checklist.findById(req.params.checklistId);
-
-  if (!userCanEditChecklist(checklist, req.auth.user._id)) {
-    throw new ApiError(StatusCodes.FORBIDDEN, 'Only your custom checklists can be edited');
-  }
+  const checklist = await resolveChecklistForEdit({
+    checklistId: req.params.checklistId,
+    userId: req.auth.user._id
+  });
 
   checklist.items.push({
     _id: createId('item'),
@@ -365,7 +489,11 @@ export const addChecklistItem = catchAsync(async (req, res) => {
 
 export const updateChecklistItem = catchAsync(async (req, res) => {
   const userId = req.auth.user._id;
-  const checklist = await Checklist.findById(req.params.checklistId);
+  let checklist = await resolveChecklistForRead({
+    checklistId: req.params.checklistId,
+    userId,
+    lean: false
+  });
 
   if (!userCanAccessChecklist(checklist, userId)) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
@@ -380,7 +508,7 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
   }
 
-  const item = checklist.items.find((entry) => entry._id === req.params.itemId);
+  let item = checklist.items.find((entry) => entry._id === req.params.itemId);
 
   if (!item) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist item not found');
@@ -388,7 +516,14 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
 
   if (req.body.text !== undefined) {
     if (!userCanEditChecklist(checklist, userId)) {
-      throw new ApiError(StatusCodes.FORBIDDEN, 'Only custom checklist items can be edited');
+      checklist = await resolveChecklistForEdit({
+        checklistId: checklist._id,
+        userId
+      });
+      item = checklist.items.find((entry) => entry._id === req.params.itemId);
+      if (!item) {
+        throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist item not found');
+      }
     }
 
     const nextText = String(req.body.text).trim();
@@ -402,7 +537,14 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
 
   if (req.body.icon !== undefined || req.body.iconEmoji !== undefined) {
     if (!userCanEditChecklist(checklist, userId)) {
-      throw new ApiError(StatusCodes.FORBIDDEN, 'Only custom checklist items can be edited');
+      checklist = await resolveChecklistForEdit({
+        checklistId: checklist._id,
+        userId
+      });
+      item = checklist.items.find((entry) => entry._id === req.params.itemId);
+      if (!item) {
+        throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist item not found');
+      }
     }
     item.icon = String(
       req.body.icon !== undefined ? req.body.icon : req.body.iconEmoji
@@ -437,11 +579,10 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
 });
 
 export const deleteChecklistItem = catchAsync(async (req, res) => {
-  const checklist = await Checklist.findById(req.params.checklistId);
-
-  if (!userCanEditChecklist(checklist, req.auth.user._id)) {
-    throw new ApiError(StatusCodes.FORBIDDEN, 'Only your custom checklists can be edited');
-  }
+  const checklist = await resolveChecklistForEdit({
+    checklistId: req.params.checklistId,
+    userId: req.auth.user._id
+  });
 
   const itemExists = checklist.items.some((entry) => entry._id === req.params.itemId);
 

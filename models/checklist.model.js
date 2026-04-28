@@ -43,6 +43,11 @@ const checklistSchema = new mongoose.Schema(
       default: null,
       index: true
     },
+    sourceChecklistId: {
+      type: String,
+      default: null,
+      index: true
+    },
     title: {
       type: String,
       required: true,
@@ -89,6 +94,17 @@ const checklistSchema = new mongoose.Schema(
     versionKey: false,
     timestamps: true,
     collection: 'checklists'
+  }
+);
+
+checklistSchema.index(
+  { ownerId: 1, sourceChecklistId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      ownerId: { $type: 'string' },
+      sourceChecklistId: { $type: 'string' }
+    }
   }
 );
 
