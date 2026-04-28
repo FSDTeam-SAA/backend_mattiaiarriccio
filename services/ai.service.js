@@ -41,10 +41,24 @@ const getOpenAIClient = () => {
   return openaiClient;
 };
 
+const PROMPT_CONFIG_TTL_MS = 60_000;
+let promptConfigCache = null;
+let promptConfigCacheExpiry = 0;
+
+const invalidatePromptConfigCache = () => {
+  promptConfigCache = null;
+  promptConfigCacheExpiry = 0;
+};
+
 const readPromptConfig = async () => {
+  const now = Date.now();
+  if (promptConfigCache && now < promptConfigCacheExpiry) {
+    return promptConfigCache;
+  }
+
   const doc = await PromptConfig.findOne({ type: 'global_prompt' }).lean();
 
-  return {
+  promptConfigCache = {
     welcomeInstruction:
       (doc && doc.welcome_instruction) || DEFAULT_WELCOME_MESSAGE,
     systemInstruction:
@@ -52,6 +66,9 @@ const readPromptConfig = async () => {
     fallbackMessage:
       (doc && doc.fallback_message) || DEFAULT_FALLBACK_RESPONSE
   };
+  promptConfigCacheExpiry = now + PROMPT_CONFIG_TTL_MS;
+
+  return promptConfigCache;
 };
 
 const normalizeEmergencyType = (value) => {
@@ -73,6 +90,7 @@ export const requestAiReply = async ({
   language
 }) => {
   const config = await readPromptConfig();
+  const hasExplicitEmergencyType = Boolean(String(emergencyType || '').trim());
   const resolvedEmergencyType = normalizeEmergencyType(emergencyType);
   const lang = normalizeLanguage(language);
 
@@ -81,7 +99,8 @@ export const requestAiReply = async ({
     welcomeInstruction: config.welcomeInstruction,
     fallbackMessage: config.fallbackMessage,
     languageInstruction: languageInstructionFor(lang),
-    emergencyType: resolvedEmergencyType
+    emergencyType: resolvedEmergencyType,
+    includeWelcome: !hasExplicitEmergencyType
   });
 
   const messages = [
@@ -208,6 +227,8 @@ export const updateAiPrompt = async ({
     { $set: update, $setOnInsert: { type: 'global_prompt' } },
     { upsert: true }
   );
+
+  invalidatePromptConfigCache();
 
   return fetchAiPrompt();
 };

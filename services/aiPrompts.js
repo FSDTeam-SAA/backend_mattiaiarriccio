@@ -23,11 +23,12 @@ LANGUAGE RULE:
 - If no selected app language is supplied, respond in the same language as the user.
 
 RESPONSE FORMAT:
-- 3-4 short numbered steps maximum.
-- Each step: one short imperative sentence, under 15 words.
+- Maximum 3 numbered steps.
+- Each step: one imperative sentence, 12 words or fewer.
+- Total response 55 words or fewer, including the closing line.
 - No preamble, no explanations, no markdown bold/headings.
 - Use plain, direct language.
-- End with a single short line reminding to call emergency services.
+- End with exactly one short line reminding to call emergency services.
 
 BOUNDARIES:
 - Only answer emergency-related queries.
@@ -246,23 +247,29 @@ export const buildSystemMessage = ({
   welcomeInstruction,
   fallbackMessage,
   languageInstruction,
-  emergencyType
-}) =>
-  `${systemInstruction}
+  emergencyType,
+  includeWelcome = true
+}) => {
+  const welcomeBlock = includeWelcome
+    ? `
+
+WELCOME BEHAVIOR:
+- If the user greets and no urgent situation is provided, respond with a brief welcome message.
+- If an urgent situation is provided, skip the welcome message and begin with emergency-specific steps.
+
+Welcome Style:
+${welcomeInstruction}`
+    : '';
+
+  return `${systemInstruction}
 
 SELECTED LANGUAGE:
 ${languageInstruction}
 
 SELECTED EMERGENCY TYPE:
-${emergencyType}
-
-WELCOME BEHAVIOR:
-- If the user greets and no emergency type or urgent situation is provided, respond with a brief welcome message.
-- If an emergency type or urgent situation is provided, skip the welcome message and begin with emergency-specific steps.
-
-Welcome Style:
-${welcomeInstruction}
+${emergencyType}${welcomeBlock}
 
 Fallback:
 ${fallbackMessage}
 `.trim();
+};
