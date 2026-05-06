@@ -4,7 +4,8 @@ import {
   deleteConversation,
   getConversationById,
   listConversations,
-  sendChatMessage
+  sendChatMessage,
+  sendChatMessageStream
 } from '../controllers/chat.controller.js';
 
 const router = Router();
@@ -14,6 +15,7 @@ router.use(requireAuth('user'));
 router.get('/conversations', listConversations);
 router.get('/history', listConversations);
 router.get('/conversations/:conversationId', getConversationById);
+router.post('/messages/stream', sendChatMessageStream);
 router.post('/messages', sendChatMessage);
 router.delete('/conversations/:conversationId', deleteConversation);
 

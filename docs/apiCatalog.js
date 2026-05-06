@@ -86,6 +86,7 @@ export const apiCatalog = {
         { method: 'GET', path: '/chat/history', description: 'Alias of the chat history list for the mobile history tab.' },
         { method: 'GET', path: '/chat/conversations/:conversationId', description: 'Fetch one conversation thread.' },
         { method: 'POST', path: '/chat/messages', description: `Send a message, call the hosted AI backend, store the reply locally, and return both messages. When provided, \`emergencyType\` is forwarded directly. Otherwise the backend reuses the conversation emergency type or falls back to \`${DEFAULT_AI_EMERGENCY_TYPE}\` so the upstream AI request always includes \`emergency_type\`.` },
+        { method: 'POST', path: '/chat/messages/stream', description: 'Send a message and stream assistant output as Server-Sent Events: meta, delta, done, or error.' },
         { method: 'DELETE', path: '/chat/conversations/:conversationId', description: 'Delete a stored conversation.' }
       ]
     },

@@ -5,8 +5,13 @@ const promptConfigSchema = new mongoose.Schema(
     type: {
       type: String,
       required: true,
-      unique: true,
       default: 'global_prompt'
+    },
+    language: {
+      type: String,
+      required: true,
+      default: 'en',
+      index: true
     },
     welcome_instruction: { type: String, default: '' },
     system_instruction: { type: String, default: '' },
@@ -18,6 +23,8 @@ const promptConfigSchema = new mongoose.Schema(
     collection: 'prompt_config'
   }
 );
+
+promptConfigSchema.index({ type: 1, language: 1 }, { unique: true });
 
 const PromptConfig =
   mongoose.models.PromptConfig ||

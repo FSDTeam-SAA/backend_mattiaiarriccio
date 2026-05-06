@@ -4,7 +4,17 @@ import catchAsync from '../utils/catchAsync.js';
 import Checklist from '../models/checklist.model.js';
 import ChecklistProgress from '../models/checklistProgress.model.js';
 import { createId } from '../lib/id.js';
-import { getManagedCategoryNames } from '../services/category.service.js';
+import {
+  getManagedCategoryNames,
+  getManagedCategoryMap,
+  localizedCategoryName,
+  resolveManagedCategorySlug
+} from '../services/category.service.js';
+import {
+  ensureSupportedLanguage,
+  normalizeLanguageCode,
+  resolveRequestLanguage
+} from '../services/language.service.js';
 import { resolveImageUrl } from '../services/media.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { parseArrayInput } from '../utils/requestParsers.js';
@@ -42,6 +52,23 @@ const userCanEditChecklist = (checklist, userId) =>
 const isChecklistHiddenForUser = (checklist, progress) =>
   isSharedChecklist(checklist) && Boolean(progress?.hidden);
 
+const languageQueryFor = (language) =>
+  language === 'en'
+    ? {
+        $or: [
+          { language: 'en' },
+          { language: { $exists: false } },
+          { language: '' },
+          { language: null }
+        ]
+      }
+    : { language };
+
+const isChecklistVisibleForLanguage = (checklist, language) => {
+  const checklistLanguage = normalizeLanguageCode(checklist?.language, 'en');
+  return checklistLanguage === language;
+};
+
 const cloneChecklistItems = (items = []) =>
   items.map((item, index) => ({
     _id: item._id || item.id || createId('item'),
@@ -62,6 +89,7 @@ const createPersonalizedChecklistFromTemplate = async ({
     title: templateChecklist.title,
     category: templateChecklist.category,
     description: templateChecklist.description,
+    language: normalizeLanguageCode(templateChecklist.language, 'en'),
     iconUrl: templateChecklist.iconUrl,
     icon: templateChecklist.icon || '',
     coverImageUrl: templateChecklist.coverImageUrl,
@@ -153,7 +181,7 @@ const resolveChecklistForEdit = async ({ checklistId, userId }) => {
   });
 };
 
-const formatChecklist = (checklist, progress) => {
+const formatChecklist = (checklist, progress, categoryMap, language = 'en') => {
   const completedItemIds = new Set(progress?.completedItemIds || []);
   const items = checklist.items
     .slice()
@@ -167,6 +195,7 @@ const formatChecklist = (checklist, progress) => {
     }));
   const completedCount = items.filter((item) => item.completed).length;
   const totalCount = items.length;
+  const category = categoryMap?.get(checklist.category);
 
   return {
     id: checklist._id,
@@ -175,8 +204,12 @@ const formatChecklist = (checklist, progress) => {
     sourceChecklistId: checklist.sourceChecklistId || null,
     isSharedDefault: isSharedChecklist(checklist),
     title: checklist.title,
-    category: checklist.category,
+    category: category
+      ? localizedCategoryName(category, language)
+      : checklist.category,
+    categorySlug: checklist.category,
     description: checklist.description,
+    language: normalizeLanguageCode(checklist.language, 'en'),
     iconUrl: checklist.iconUrl,
     icon: checklist.icon || '',
     coverImageUrl: checklist.coverImageUrl,
@@ -212,19 +245,27 @@ export const listChecklists = catchAsync(async (req, res) => {
   const search = String(req.query.search || '').trim().toLowerCase();
   const category = String(req.query.category || '').trim().toLowerCase();
   const userId = req.auth.user._id;
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
 
-  const [fetchedChecklists, progressEntries, managedCategories] = await Promise.all([
-    Checklist.find({
-      $or: [
-        { ownerId: null, status: 'published' },
-        { ownerId: userId }
-      ]
-    })
-      .sort({ updatedAt: -1 })
-      .lean(),
-    ChecklistProgress.find({ userId }).lean(),
-    getManagedCategoryNames()
-  ]);
+  const [fetchedChecklists, progressEntries, categoryMap, managedCategoryNames] =
+    await Promise.all([
+      Checklist.find({
+        $and: [
+          {
+            $or: [
+              { ownerId: null, status: 'published' },
+              { ownerId: userId }
+            ]
+          },
+          languageQueryFor(language)
+        ]
+      })
+        .sort({ updatedAt: -1 })
+        .lean(),
+      ChecklistProgress.find({ userId }).lean(),
+      getManagedCategoryMap(),
+      getManagedCategoryNames(language)
+    ]);
   const progressMap = new Map(progressEntries.map((entry) => [entry.checklistId, entry]));
   const personalizedTemplateIds = new Set(
     fetchedChecklists
@@ -238,50 +279,60 @@ export const listChecklists = catchAsync(async (req, res) => {
   });
 
   if (category) {
-    checklists = checklists.filter(
-      (checklist) => checklist.category.toLowerCase() === category
-    );
+    checklists = checklists.filter((checklist) => {
+      const categoryDoc = categoryMap.get(checklist.category);
+      const localizedName = localizedCategoryName(categoryDoc, language).toLowerCase();
+      return (
+        checklist.category.toLowerCase() === category ||
+        localizedName === category
+      );
+    });
   }
 
   if (search) {
-    checklists = checklists.filter((checklist) =>
-      [checklist.title, checklist.description, checklist.category]
+    checklists = checklists.filter((checklist) => {
+      const categoryDoc = categoryMap.get(checklist.category);
+      const localizedName = localizedCategoryName(categoryDoc, language);
+      return [checklist.title, checklist.description, localizedName]
         .join(' ')
         .toLowerCase()
-        .includes(search)
-    );
+        .includes(search);
+    });
   }
-
-  const categories = [...new Set([...managedCategories, ...checklists.map((item) => item.category)])]
-    .filter(Boolean)
-    .sort();
 
   sendSuccess(res, {
     message: 'Checklists fetched successfully',
     data: checklists.map((checklist) =>
-      formatChecklist(checklist, progressMap.get(checklist._id))
+      formatChecklist(checklist, progressMap.get(checklist._id), categoryMap, language)
     ),
     meta: {
-      categories
+      categories: managedCategoryNames
     }
   });
 });
 
 export const getChecklistById = catchAsync(async (req, res) => {
   const userId = req.auth.user._id;
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
   const checklist = await resolveChecklistForRead({
     checklistId: req.params.checklistId,
     userId
   });
 
-  if (!userCanAccessChecklist(checklist, userId)) {
+  if (
+    !userCanAccessChecklist(checklist, userId) ||
+    !isChecklistVisibleForLanguage(checklist, language)
+  ) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
   }
 
-  const progress = await ChecklistProgress.findOne({
-    userId,
-    checklistId: checklist._id
-  }).lean();
+  const [progress, categoryMap] = await Promise.all([
+    ChecklistProgress.findOne({
+      userId,
+      checklistId: checklist._id
+    }).lean(),
+    getManagedCategoryMap()
+  ]);
 
   if (isChecklistHiddenForUser(checklist, progress)) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
@@ -289,7 +340,7 @@ export const getChecklistById = catchAsync(async (req, res) => {
 
   sendSuccess(res, {
     message: 'Checklist fetched successfully',
-    data: formatChecklist(checklist, progress)
+    data: formatChecklist(checklist, progress, categoryMap, language)
   });
 });
 
@@ -318,14 +369,18 @@ export const createChecklist = catchAsync(async (req, res) => {
     defaultValue: 'https://placehold.co/1200x800/png?text=Custom+Checklist'
   });
 
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
+  const categorySlug = await resolveManagedCategorySlug(req.body.category);
+
   const checklist = await Checklist.create({
     _id: createId('checklist'),
     type: 'custom',
     ownerId: req.auth.user._id,
     sourceChecklistId: null,
     title,
-    category: String(req.body.category || 'Custom').trim(),
+    category: categorySlug,
     description: String(req.body.description || '').trim(),
+    language: ensureSupportedLanguage(req.body.language || language),
     iconUrl,
     icon: String(req.body.iconEmoji || req.body.icon_text || '').trim(),
     coverImageUrl,
@@ -334,10 +389,12 @@ export const createChecklist = catchAsync(async (req, res) => {
     items: normalizeItems(itemsInput)
   });
 
+  const categoryMap = await getManagedCategoryMap();
+
   sendSuccess(res, {
     statusCode: StatusCodes.CREATED,
     message: 'Checklist created successfully',
-    data: formatChecklist(checklist.toObject(), null)
+    data: formatChecklist(checklist.toObject(), null, categoryMap, language)
   });
 });
 
@@ -360,7 +417,11 @@ export const updateChecklist = catchAsync(async (req, res) => {
   }
 
   if (req.body.category !== undefined) {
-    checklist.category = String(req.body.category).trim() || checklist.category;
+    checklist.category = await resolveManagedCategorySlug(req.body.category);
+  }
+
+  if (req.body.language !== undefined) {
+    checklist.language = ensureSupportedLanguage(req.body.language);
   }
 
   checklist.iconUrl = await resolveImageUrl({
@@ -394,14 +455,18 @@ export const updateChecklist = catchAsync(async (req, res) => {
 
   await checklist.save();
 
-  const progress = await ChecklistProgress.findOne({
-    userId: req.auth.user._id,
-    checklistId: checklist._id
-  }).lean();
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
+  const [progress, categoryMap] = await Promise.all([
+    ChecklistProgress.findOne({
+      userId: req.auth.user._id,
+      checklistId: checklist._id
+    }).lean(),
+    getManagedCategoryMap()
+  ]);
 
   sendSuccess(res, {
     message: 'Checklist updated successfully',
-    data: formatChecklist(checklist.toObject(), progress)
+    data: formatChecklist(checklist.toObject(), progress, categoryMap, language)
   });
 });
 
@@ -473,15 +538,19 @@ export const addChecklistItem = catchAsync(async (req, res) => {
   });
   await checklist.save();
 
-  const progress = await ChecklistProgress.findOne({
-    userId: req.auth.user._id,
-    checklistId: checklist._id
-  }).lean();
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
+  const [progress, categoryMap] = await Promise.all([
+    ChecklistProgress.findOne({
+      userId: req.auth.user._id,
+      checklistId: checklist._id
+    }).lean(),
+    getManagedCategoryMap()
+  ]);
 
   sendSuccess(res, {
     statusCode: StatusCodes.CREATED,
     message: 'Checklist item added successfully',
-    data: formatChecklist(checklist.toObject(), progress)
+    data: formatChecklist(checklist.toObject(), progress, categoryMap, language)
   });
 });
 
@@ -570,9 +639,12 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
 
   await checklist.save();
 
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
+  const categoryMap = await getManagedCategoryMap();
+
   sendSuccess(res, {
     message: 'Checklist item updated successfully',
-    data: formatChecklist(checklist.toObject(), progress.toObject())
+    data: formatChecklist(checklist.toObject(), progress.toObject(), categoryMap, language)
   });
 });
 
@@ -610,11 +682,16 @@ export const deleteChecklistItem = catchAsync(async (req, res) => {
     await progress.save();
   }
 
+  const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
+  const categoryMap = await getManagedCategoryMap();
+
   sendSuccess(res, {
     message: 'Checklist item deleted successfully',
     data: formatChecklist(
       checklist.toObject(),
-      progress ? progress.toObject() : null
+      progress ? progress.toObject() : null,
+      categoryMap,
+      language
     )
   });
 });

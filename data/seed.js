@@ -88,7 +88,7 @@ export const buildSeedData = () => {
         _id: 'tip_fire_safety_home',
         slug: 'fire-safety-at-home',
         title: 'Fire Safety at Home',
-        category: 'Fire Safety',
+        category: 'fire-safety',
         summary:
           'Reduce home fire risks with safer cooking, wiring checks, and an evacuation plan.',
         contentSections: [
@@ -132,7 +132,7 @@ export const buildSeedData = () => {
         _id: 'tip_earthquake_prep',
         slug: 'earthquake-preparedness',
         title: 'Earthquake Preparedness',
-        category: 'Earthquake',
+        category: 'earthquake',
         summary:
           'Prepare your home and family with safe sheltering steps, emergency supplies, and communication plans.',
         contentSections: [
@@ -176,7 +176,7 @@ export const buildSeedData = () => {
         _id: 'tip_basic_cpr',
         slug: 'basic-cpr-the-cab-method',
         title: 'Basic CPR: The CAB Method',
-        category: 'First Aid',
+        category: 'first-aid',
         summary:
           'Use the CPR CAB sequence to respond quickly while emergency services are on the way.',
         contentSections: [
@@ -220,7 +220,7 @@ export const buildSeedData = () => {
         _id: 'tip_snake_bite',
         slug: 'snake-bite-response',
         title: 'Snake Bite Response',
-        category: 'First Aid',
+        category: 'first-aid',
         summary:
           'Keep the person calm, limit movement, and seek urgent medical care after a snake bite.',
         contentSections: [
@@ -259,7 +259,7 @@ export const buildSeedData = () => {
         _id: 'tip_allergic_reaction',
         slug: 'allergic-reaction-response',
         title: 'Allergic Reaction Response',
-        category: 'First Aid',
+        category: 'first-aid',
         summary:
           'Recognize severe allergic reactions early and use prescribed emergency medication immediately.',
         contentSections: [
@@ -298,7 +298,7 @@ export const buildSeedData = () => {
         _id: 'tip_blackout',
         slug: 'blackout-readiness',
         title: 'Blackout Readiness',
-        category: 'Blackout',
+        category: 'blackout',
         summary:
           'Prepare lighting, device charging, food storage, and backup plans before a power outage.',
         contentSections: [
@@ -337,7 +337,7 @@ export const buildSeedData = () => {
         _id: 'tip_gas_leak',
         slug: 'gas-leak-response',
         title: 'Gas Leak Response',
-        category: 'Gas Leak',
+        category: 'gas-leak',
         summary:
           'Leave immediately, avoid sparks, and contact emergency services if you suspect a gas leak.',
         contentSections: [
@@ -379,7 +379,7 @@ export const buildSeedData = () => {
         type: 'template',
         ownerId: null,
         title: 'Earthquake Preparedness',
-        category: 'Earthquake',
+        category: 'earthquake',
         description:
           'Build a safer home setup, stock essential supplies, and agree on a family communication plan.',
         iconUrl: 'https://placehold.co/128x128/png?text=EQ',
@@ -406,7 +406,7 @@ export const buildSeedData = () => {
         type: 'template',
         ownerId: null,
         title: 'Fire Safety',
-        category: 'Fire Safety',
+        category: 'fire-safety',
         description:
           'Keep fire prevention, smoke detection, and evacuation essentials ready at home.',
         iconUrl: 'https://placehold.co/128x128/png?text=FIRE',
@@ -428,7 +428,7 @@ export const buildSeedData = () => {
         type: 'template',
         ownerId: null,
         title: 'First Aid Readiness',
-        category: 'First Aid',
+        category: 'first-aid',
         description: 'Make sure core first-aid supplies are stocked and easy to reach.',
         iconUrl: 'https://placehold.co/128x128/png?text=AID',
         coverImageUrl: 'https://placehold.co/1200x800/png?text=First+Aid+Checklist',
@@ -449,7 +449,7 @@ export const buildSeedData = () => {
         type: 'template',
         ownerId: null,
         title: 'Home Safety',
-        category: 'Home Safety',
+        category: 'home-safety',
         description:
           'Keep essential household hazards under control with a simple monthly review.',
         iconUrl: 'https://placehold.co/128x128/png?text=HOME',
@@ -470,7 +470,7 @@ export const buildSeedData = () => {
         type: 'custom',
         ownerId: 'user_madiha_aroa',
         title: 'Family Go-Bag',
-        category: 'Custom',
+        category: 'home-safety',
         description:
           'A personal checklist for grab-and-go emergency supplies for the whole family.',
         iconUrl: 'https://placehold.co/128x128/png?text=BAG',

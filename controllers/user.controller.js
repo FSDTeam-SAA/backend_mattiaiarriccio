@@ -10,7 +10,11 @@ import LegalDocument from '../models/legalDocument.model.js';
 import SafetyTip from '../models/safetyTip.model.js';
 import { appConfig } from '../data/appConfig.js';
 import { createId } from '../lib/id.js';
-import { getManagedCategoryNames } from '../services/category.service.js';
+import {
+  getManagedCategoryNames,
+  getManagedCategoryMap,
+  localizedCategoryName
+} from '../services/category.service.js';
 import {
   ensureSupportedLanguage,
   homeCopyFor,
@@ -53,6 +57,18 @@ const checklistProgressSummary = (checklists, progressEntries) => {
     completed: completedChecklists
   };
 };
+
+const languageQueryFor = (language) =>
+  language === 'en'
+    ? {
+        $or: [
+          { language: 'en' },
+          { language: { $exists: false } },
+          { language: '' },
+          { language: null }
+        ]
+      }
+    : { language };
 
 const conversationSummary = (conversation) => ({
   id: conversation._id,
@@ -209,7 +225,7 @@ export const getHome = catchAsync(async (req, res) => {
   const featuredGuideQuery = {
     status: 'published',
     featured: true,
-    $or: [{ language }, { language: 'en' }]
+    ...languageQueryFor(language)
   };
 
   const [
@@ -219,14 +235,20 @@ export const getHome = catchAsync(async (req, res) => {
     featuredGuides,
     conversations,
     unreadNotifications,
-    categories
+    categories,
+    categoryMap
   ] =
     await Promise.all([
       User.findById(userId).lean(),
       Checklist.find({
-        $or: [
-          { type: 'template', status: 'published' },
-          { type: 'custom', ownerId: userId }
+        $and: [
+          {
+            $or: [
+              { type: 'template', status: 'published' },
+              { type: 'custom', ownerId: userId }
+            ]
+          },
+          languageQueryFor(language)
         ]
       }).lean(),
       ChecklistProgress.find({ userId }).lean(),
@@ -236,7 +258,8 @@ export const getHome = catchAsync(async (req, res) => {
         .lean(),
       Conversation.find({ userId }).sort({ updatedAt: -1 }).limit(5).lean(),
       Notification.countDocuments({ userId, read: false }),
-      getManagedCategoryNames()
+      getManagedCategoryNames(language),
+      getManagedCategoryMap()
     ]);
   const hiddenTemplateChecklistIds = new Set(
     progressEntries
@@ -277,15 +300,19 @@ export const getHome = catchAsync(async (req, res) => {
           route: '/checklists'
         }
       ],
-      featuredGuides: featuredGuides.map((tip) => ({
-        id: tip._id,
-        slug: tip.slug,
-        title: tip.title,
-        category: tip.category,
-        summary: tip.summary,
-        thumbnailUrl: tip.thumbnailUrl,
-        estimatedReadMinutes: tip.estimatedReadMinutes
-      })),
+      featuredGuides: featuredGuides.map((tip) => {
+        const category = categoryMap.get(tip.category);
+        return {
+          id: tip._id,
+          slug: tip.slug,
+          title: tip.title,
+          category: localizedCategoryName(category, language),
+          categorySlug: tip.category,
+          summary: tip.summary,
+          thumbnailUrl: tip.thumbnailUrl,
+          estimatedReadMinutes: tip.estimatedReadMinutes
+        };
+      }),
       checklistSummary: checklistProgressSummary(visibleChecklists, progressEntries),
       chatHistoryPreview: conversations.map(conversationSummary),
       categories,

@@ -81,6 +81,11 @@ const checklistSchema = new mongoose.Schema(
       enum: ['draft', 'published'],
       default: 'published'
     },
+    language: {
+      type: String,
+      default: 'en',
+      index: true
+    },
     createdBy: {
       type: String,
       required: true

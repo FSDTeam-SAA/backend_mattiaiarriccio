@@ -1,11 +1,9 @@
 import OpenAI from 'openai';
-import { StatusCodes } from 'http-status-codes';
-import ApiError from '../utils/ApiError.js';
 import PromptConfig from '../models/promptConfig.model.js';
 import {
-  DEFAULT_WELCOME_MESSAGE,
-  DEFAULT_SYSTEM_INSTRUCTION,
-  DEFAULT_FALLBACK_RESPONSE,
+  defaultWelcomeFor,
+  defaultSystemInstructionFor,
+  defaultFallbackFor,
   buildSystemMessage,
   buildOfflineEmergencyGuide,
   languageInstructionFor,
@@ -25,7 +23,7 @@ const getOpenAIClient = () => {
   if (!apiKey) {
     if (!warnedMissingKey) {
       console.error(
-        '[ai.service] ❌ OPENAI_API_KEY is missing. ' +
+        '[ai.service] OPENAI_API_KEY is missing. ' +
           'Create a .env file in the project root with OPENAI_API_KEY=sk-... ' +
           '(optionally OPENAI_MODEL). All AI requests will return the offline fallback until this is set.'
       );
@@ -36,39 +34,42 @@ const getOpenAIClient = () => {
     throw error;
   }
 
-  console.log(`[ai.service] ✅ OpenAI client initialised (model=${OPENAI_MODEL})`);
+  console.log(`[ai.service] OpenAI client initialised (model=${OPENAI_MODEL})`);
   openaiClient = new OpenAI({ apiKey });
   return openaiClient;
 };
 
 const PROMPT_CONFIG_TTL_MS = 60_000;
-let promptConfigCache = null;
-let promptConfigCacheExpiry = 0;
+const promptConfigCache = new Map();
 
 const invalidatePromptConfigCache = () => {
-  promptConfigCache = null;
-  promptConfigCacheExpiry = 0;
+  promptConfigCache.clear();
 };
 
-const readPromptConfig = async () => {
+const readPromptConfig = async (language) => {
+  const lang = normalizeLanguage(language);
+  const cached = promptConfigCache.get(lang);
   const now = Date.now();
-  if (promptConfigCache && now < promptConfigCacheExpiry) {
-    return promptConfigCache;
+  if (cached && now < cached.expiry) {
+    return cached.value;
   }
 
-  const doc = await PromptConfig.findOne({ type: 'global_prompt' }).lean();
+  const doc = await PromptConfig.findOne({
+    type: 'global_prompt',
+    language: lang
+  }).lean();
 
-  promptConfigCache = {
+  const value = {
     welcomeInstruction:
-      (doc && doc.welcome_instruction) || DEFAULT_WELCOME_MESSAGE,
+      (doc && doc.welcome_instruction) || defaultWelcomeFor(lang),
     systemInstruction:
-      (doc && doc.system_instruction) || DEFAULT_SYSTEM_INSTRUCTION,
+      (doc && doc.system_instruction) || defaultSystemInstructionFor(lang),
     fallbackMessage:
-      (doc && doc.fallback_message) || DEFAULT_FALLBACK_RESPONSE
+      (doc && doc.fallback_message) || defaultFallbackFor(lang)
   };
-  promptConfigCacheExpiry = now + PROMPT_CONFIG_TTL_MS;
+  promptConfigCache.set(lang, { value, expiry: now + PROMPT_CONFIG_TTL_MS });
 
-  return promptConfigCache;
+  return value;
 };
 
 const normalizeEmergencyType = (value) => {
@@ -76,23 +77,11 @@ const normalizeEmergencyType = (value) => {
   return cleaned || DEFAULT_AI_EMERGENCY_TYPE;
 };
 
-export const getAiServiceInfo = () => ({
-  mode: 'embedded',
-  provider: 'openai',
-  model: OPENAI_MODEL,
-  baseUrl: null,
-  docsUrl: null
-});
-
-export const requestAiReply = async ({
-  query,
-  emergencyType,
-  language
-}) => {
-  const config = await readPromptConfig();
+const buildAiRequest = async ({ query, emergencyType, language }) => {
+  const lang = normalizeLanguage(language);
+  const config = await readPromptConfig(lang);
   const hasExplicitEmergencyType = Boolean(String(emergencyType || '').trim());
   const resolvedEmergencyType = normalizeEmergencyType(emergencyType);
-  const lang = normalizeLanguage(language);
 
   const systemMessage = buildSystemMessage({
     systemInstruction: config.systemInstruction,
@@ -115,7 +104,7 @@ export const requestAiReply = async ({
         language: lang
       }) ||
       config.fallbackMessage ||
-      DEFAULT_FALLBACK_RESPONSE;
+      defaultFallbackFor(lang);
 
     return {
       reply,
@@ -126,6 +115,60 @@ export const requestAiReply = async ({
       degraded: true
     };
   };
+
+  return { messages, offlineFallback };
+};
+
+const logAiProviderError = (error) => {
+  const upstreamMessage =
+    error?.error?.message ||
+    error?.response?.data?.error?.message ||
+    error?.message ||
+    'OpenAI request failed';
+
+  const status = error?.status || error?.response?.status || 'n/a';
+  const code = error?.code || error?.error?.code || error?.name || 'unknown';
+  const type = error?.type || error?.error?.type || 'n/a';
+
+  console.error(
+    `[ai.service] AI provider request failed; falling back to offline guide\n` +
+      `  model:   ${OPENAI_MODEL}\n` +
+      `  code:    ${code}\n` +
+      `  status:  ${status}\n` +
+      `  type:    ${type}\n` +
+      `  message: ${upstreamMessage}`
+  );
+
+  if (process.env.AI_DEBUG === '1' && error?.stack) {
+    console.error('[ai.service] stack:', error.stack);
+  }
+};
+
+const streamFallbackText = async (text, onDelta) => {
+  const words = String(text || '').match(/\S+\s*/g) || [];
+  for (const word of words) {
+    await onDelta(word);
+  }
+};
+
+export const getAiServiceInfo = () => ({
+  mode: 'embedded',
+  provider: 'openai',
+  model: OPENAI_MODEL,
+  baseUrl: null,
+  docsUrl: null
+});
+
+export const requestAiReply = async ({
+  query,
+  emergencyType,
+  language
+}) => {
+  const { messages, offlineFallback } = await buildAiRequest({
+    query,
+    emergencyType,
+    language
+  });
 
   try {
     const client = getOpenAIClient();
@@ -143,15 +186,15 @@ export const requestAiReply = async ({
 
     if (!reply.trim()) {
       console.warn(
-        `[ai.service] ⚠️ OpenAI returned empty reply in ${elapsedMs}ms ` +
+        `[ai.service] OpenAI returned empty reply in ${elapsedMs}ms ` +
           `(model=${completion?.model || OPENAI_MODEL}, id=${completion?.id || 'n/a'}, ` +
-          `finish=${completion?.choices?.[0]?.finish_reason || 'n/a'}) — serving offline fallback.`
+          `finish=${completion?.choices?.[0]?.finish_reason || 'n/a'}); serving offline fallback.`
       );
       return offlineFallback();
     }
 
     console.log(
-      `[ai.service] ✅ OpenAI reply ok (model=${completion?.model || OPENAI_MODEL}, ` +
+      `[ai.service] OpenAI reply ok (model=${completion?.model || OPENAI_MODEL}, ` +
         `id=${completion?.id || 'n/a'}, ${elapsedMs}ms, ${reply.length} chars)`
     );
 
@@ -163,37 +206,96 @@ export const requestAiReply = async ({
       }
     };
   } catch (error) {
-    const upstreamMessage =
-      error?.error?.message ||
-      error?.response?.data?.error?.message ||
-      error?.message ||
-      'OpenAI request failed';
-
-    const status = error?.status || error?.response?.status || 'n/a';
-    const code = error?.code || error?.error?.code || error?.name || 'unknown';
-    const type = error?.type || error?.error?.type || 'n/a';
-
-    console.error(
-      `[ai.service] ❌ AI provider request failed → falling back to offline guide\n` +
-        `  • model:   ${OPENAI_MODEL}\n` +
-        `  • code:    ${code}\n` +
-        `  • status:  ${status}\n` +
-        `  • type:    ${type}\n` +
-        `  • message: ${upstreamMessage}`
-    );
-
-    if (process.env.AI_DEBUG === '1' && error?.stack) {
-      console.error('[ai.service] stack:', error.stack);
-    }
-
+    logAiProviderError(error);
     return offlineFallback();
   }
 };
 
-export const fetchAiPrompt = async () => {
-  const config = await readPromptConfig();
+export const requestAiReplyStream = async ({
+  query,
+  emergencyType,
+  language,
+  onDelta
+}) => {
+  const { messages, offlineFallback } = await buildAiRequest({
+    query,
+    emergencyType,
+    language
+  });
+  const emitDelta = typeof onDelta === 'function' ? onDelta : async () => {};
+  let emittedAnyDelta = false;
+
+  try {
+    const client = getOpenAIClient();
+    const startedAt = Date.now();
+    const stream = await client.chat.completions.create({
+      model: OPENAI_MODEL,
+      messages,
+      max_completion_tokens: 1200,
+      reasoning_effort: 'minimal',
+      verbosity: 'low',
+      stream: true
+    });
+
+    let reply = '';
+    let responseId = null;
+    let responseModel = OPENAI_MODEL;
+    let finishReason = null;
+
+    for await (const chunk of stream) {
+      responseId = responseId || chunk?.id || null;
+      responseModel = chunk?.model || responseModel;
+      finishReason = chunk?.choices?.[0]?.finish_reason || finishReason;
+
+      const delta = chunk?.choices?.[0]?.delta?.content || '';
+      if (!delta) continue;
+
+      reply += delta;
+      emittedAnyDelta = true;
+      await emitDelta(delta);
+    }
+
+    const elapsedMs = Date.now() - startedAt;
+    if (!reply.trim()) {
+      console.warn(
+        `[ai.service] OpenAI streamed empty reply in ${elapsedMs}ms ` +
+          `(model=${responseModel}, id=${responseId || 'n/a'}, ` +
+          `finish=${finishReason || 'n/a'}); serving offline fallback.`
+      );
+      const fallback = offlineFallback();
+      await streamFallbackText(fallback.reply, emitDelta);
+      return fallback;
+    }
+
+    console.log(
+      `[ai.service] OpenAI stream ok (model=${responseModel}, ` +
+        `id=${responseId || 'n/a'}, ${elapsedMs}ms, ${reply.length} chars)`
+    );
+
+    return {
+      reply,
+      raw: {
+        id: responseId,
+        model: responseModel
+      }
+    };
+  } catch (error) {
+    logAiProviderError(error);
+    if (emittedAnyDelta) {
+      throw error;
+    }
+    const fallback = offlineFallback();
+    await streamFallbackText(fallback.reply, emitDelta);
+    return fallback;
+  }
+};
+
+export const fetchAiPrompt = async (language = 'en') => {
+  const lang = normalizeLanguage(language);
+  const config = await readPromptConfig(lang);
 
   return {
+    language: lang,
     welcomeMessage: config.welcomeInstruction,
     systemInstruction: config.systemInstruction,
     fallbackMessage: config.fallbackMessage,
@@ -205,11 +307,18 @@ export const fetchAiPrompt = async () => {
   };
 };
 
+export const fetchAllAiPrompts = async () => {
+  const [en, it] = await Promise.all([fetchAiPrompt('en'), fetchAiPrompt('it')]);
+  return { en, it };
+};
+
 export const updateAiPrompt = async ({
+  language = 'en',
   welcomeMessage,
   systemInstruction,
   fallbackMessage
 }) => {
+  const lang = normalizeLanguage(language);
   const update = { updated_at: new Date() };
 
   if (welcomeMessage !== undefined) {
@@ -223,12 +332,15 @@ export const updateAiPrompt = async ({
   }
 
   await PromptConfig.updateOne(
-    { type: 'global_prompt' },
-    { $set: update, $setOnInsert: { type: 'global_prompt' } },
+    { type: 'global_prompt', language: lang },
+    {
+      $set: update,
+      $setOnInsert: { type: 'global_prompt', language: lang }
+    },
     { upsert: true }
   );
 
   invalidatePromptConfigCache();
 
-  return fetchAiPrompt();
+  return fetchAiPrompt(lang);
 };

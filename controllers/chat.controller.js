@@ -4,6 +4,7 @@ import catchAsync from '../utils/catchAsync.js';
 import Conversation from '../models/conversation.model.js';
 import {
   requestAiReply,
+  requestAiReplyStream,
   getAiServiceInfo,
   DEFAULT_AI_EMERGENCY_TYPE
 } from '../services/ai.service.js';
@@ -27,6 +28,13 @@ const summarizeConversation = (conversation) => ({
   createdAt: conversation.createdAt
 });
 
+const serializeMessage = (message) => ({
+  id: message._id,
+  role: message.role,
+  content: message.content,
+  createdAt: message.createdAt
+});
+
 const serializeConversation = (conversation) => ({
   id: conversation._id,
   title: conversation.title,
@@ -35,12 +43,7 @@ const serializeConversation = (conversation) => ({
   language: conversation.language || 'en',
   createdAt: conversation.createdAt,
   updatedAt: conversation.updatedAt,
-  messages: conversation.messages.map((message) => ({
-    id: message._id,
-    role: message.role,
-    content: message.content,
-    createdAt: message.createdAt
-  }))
+  messages: conversation.messages.map(serializeMessage)
 });
 
 const normalizeEmergencyType = (value) =>
@@ -55,6 +58,7 @@ const resolveEmergencyType = (requestedEmergencyType, conversation) =>
   requestedEmergencyType ||
   normalizeEmergencyType(conversation?.emergencyType) ||
   DEFAULT_AI_EMERGENCY_TYPE;
+
 const buildEmergencyAwareMessage = (message, emergencyType, language) => {
   const trimmedMessage = String(message || '').trim();
 
@@ -77,7 +81,6 @@ const buildAiQuery = ({
   conversation,
   latestMessage,
   emergencyType,
-  language,
   isNewConversation
 }) => {
   const history = conversation?.messages?.slice(-4) || [];
@@ -112,6 +115,112 @@ const buildAiQuery = ({
     .filter(Boolean)
     .join('\n\n');
 };
+
+const parseChatRequest = async (req) => {
+  const requestedLanguage = resolveRequestLanguage(
+    req,
+    req.auth.user.preferredLanguage
+  );
+  const requestedEmergencyType = normalizeEmergencyType(
+    pickFirstDefined(req.body.emergencyType, req.body.emergency_type)
+  );
+  const message = buildEmergencyAwareMessage(
+    pickFirstDefined(req.body.message, req.body.query),
+    requestedEmergencyType,
+    requestedLanguage
+  );
+  const requestedConversationId = String(
+    pickFirstDefined(req.body.conversationId, req.body.conversation_id) || ''
+  ).trim();
+
+  if (!message) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'message is required unless emergencyType is provided'
+    );
+  }
+
+  const conversation = requestedConversationId
+    ? await Conversation.findOne({
+        _id: requestedConversationId,
+        userId: req.auth.user._id
+      })
+    : null;
+
+  if (requestedConversationId && !conversation) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Conversation not found');
+  }
+
+  const effectiveEmergencyType = resolveEmergencyType(
+    requestedEmergencyType,
+    conversation
+  );
+
+  return {
+    requestedLanguage,
+    requestedEmergencyType,
+    requestedConversationId,
+    message,
+    conversation,
+    effectiveEmergencyType,
+    aiQuery: buildAiQuery({
+      conversation: conversation?.toObject(),
+      latestMessage: message,
+      emergencyType: effectiveEmergencyType,
+      isNewConversation: !conversation
+    })
+  };
+};
+
+const ensureConversationForMessage = ({
+  conversation,
+  requestedEmergencyType,
+  effectiveEmergencyType,
+  requestedLanguage,
+  message,
+  userId
+}) => {
+  if (!conversation) {
+    return new Conversation({
+      _id: createId('conv'),
+      userId,
+      title: summarizeText(
+        requestedEmergencyType ? `${requestedEmergencyType} emergency` : message,
+        42
+      ),
+      emergencyType: effectiveEmergencyType,
+      language: requestedLanguage,
+      messages: []
+    });
+  }
+
+  if (
+    requestedEmergencyType ||
+    !normalizeEmergencyType(conversation.emergencyType)
+  ) {
+    conversation.emergencyType = effectiveEmergencyType;
+  }
+  conversation.language = requestedLanguage;
+  return conversation;
+};
+
+const writeSseEvent = (res, event, data) => {
+  if (res.writableEnded || res.destroyed) return;
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+};
+
+const setSseHeaders = (res) => {
+  res.status(StatusCodes.OK);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+};
+
+const userSafeStreamError = () =>
+  'Unable to deliver this message right now. Please try again.';
 
 export const listConversations = catchAsync(async (req, res) => {
   const conversations = await Conversation.find({ userId: req.auth.user._id })
@@ -148,79 +257,28 @@ export const getConversationById = catchAsync(async (req, res) => {
 });
 
 export const sendChatMessage = catchAsync(async (req, res) => {
-  const requestedLanguage = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
-  const requestedEmergencyType = normalizeEmergencyType(
-    pickFirstDefined(req.body.emergencyType, req.body.emergency_type)
-  );
-  const message = buildEmergencyAwareMessage(
-    pickFirstDefined(req.body.message, req.body.query),
-    requestedEmergencyType,
-    requestedLanguage
-  );
-  const requestedConversationId = String(
-    pickFirstDefined(req.body.conversationId, req.body.conversation_id) || ''
-  ).trim();
-
-  if (!message) {
-    throw new ApiError(
-      StatusCodes.BAD_REQUEST,
-      'message is required unless emergencyType is provided'
-    );
-  }
-
-  let conversation = requestedConversationId
-    ? await Conversation.findOne({
-        _id: requestedConversationId,
-        userId: req.auth.user._id
-      })
-    : null;
-
-  if (requestedConversationId && !conversation) {
-    throw new ApiError(StatusCodes.NOT_FOUND, 'Conversation not found');
-  }
-
-  const effectiveEmergencyType = resolveEmergencyType(
-    requestedEmergencyType,
-    conversation
-  );
+  const chat = await parseChatRequest(req);
 
   const aiResponse = await requestAiReply({
     userId: req.auth.user._id,
-    emergencyType: effectiveEmergencyType,
-    language: requestedLanguage,
-    query: buildAiQuery({
-      conversation: conversation?.toObject(),
-      latestMessage: message,
-      emergencyType: effectiveEmergencyType,
-      language: requestedLanguage,
-      isNewConversation: !conversation
-    })
+    emergencyType: chat.effectiveEmergencyType,
+    language: chat.requestedLanguage,
+    query: chat.aiQuery
   });
 
-  if (!conversation) {
-    conversation = await Conversation.create({
-      _id: createId('conv'),
-      userId: req.auth.user._id,
-      title: summarizeText(
-        requestedEmergencyType ? `${requestedEmergencyType} emergency` : message,
-        42
-      ),
-      emergencyType: effectiveEmergencyType,
-      language: requestedLanguage,
-      messages: []
-    });
-  } else if (
-    requestedEmergencyType ||
-    !normalizeEmergencyType(conversation.emergencyType)
-  ) {
-    conversation.emergencyType = effectiveEmergencyType;
-  }
-  conversation.language = requestedLanguage;
+  const conversation = ensureConversationForMessage({
+    conversation: chat.conversation,
+    requestedEmergencyType: chat.requestedEmergencyType,
+    effectiveEmergencyType: chat.effectiveEmergencyType,
+    requestedLanguage: chat.requestedLanguage,
+    message: chat.message,
+    userId: req.auth.user._id
+  });
 
   const userMessage = {
     _id: createId('msg'),
     role: 'user',
-    content: message,
+    content: chat.message,
     createdAt: new Date()
   };
 
@@ -236,26 +294,94 @@ export const sendChatMessage = catchAsync(async (req, res) => {
 
   sendSuccess(res, {
     statusCode: StatusCodes.CREATED,
-    message: messageFor(requestedLanguage, 'chatProcessed'),
+    message: messageFor(chat.requestedLanguage, 'chatProcessed'),
     data: {
       conversation: serializeConversation(conversation.toObject()),
-      userMessage: {
-        id: userMessage._id,
-        role: userMessage.role,
-        content: userMessage.content,
-        createdAt: userMessage.createdAt
-      },
-      assistantMessage: {
-        id: assistantMessage._id,
-        role: assistantMessage.role,
-        content: assistantMessage.content,
-        createdAt: assistantMessage.createdAt
-      },
+      userMessage: serializeMessage(userMessage),
+      assistantMessage: serializeMessage(assistantMessage),
       aiSource: getAiServiceInfo(),
       degraded: Boolean(aiResponse?.degraded)
     }
   });
 });
+
+export const sendChatMessageStream = async (req, res, next) => {
+  let requestedLanguage = 'en';
+
+  try {
+    const chat = await parseChatRequest(req);
+    requestedLanguage = chat.requestedLanguage;
+
+    const conversation = ensureConversationForMessage({
+      conversation: chat.conversation,
+      requestedEmergencyType: chat.requestedEmergencyType,
+      effectiveEmergencyType: chat.effectiveEmergencyType,
+      requestedLanguage: chat.requestedLanguage,
+      message: chat.message,
+      userId: req.auth.user._id
+    });
+
+    const userMessage = {
+      _id: createId('msg'),
+      role: 'user',
+      content: chat.message,
+      createdAt: new Date()
+    };
+
+    setSseHeaders(res);
+    writeSseEvent(res, 'meta', {
+      conversationId: conversation._id,
+      emergencyType: conversation.emergencyType || '',
+      language: conversation.language || 'en',
+      userMessage: serializeMessage(userMessage),
+      aiSource: getAiServiceInfo()
+    });
+
+    const aiResponse = await requestAiReplyStream({
+      userId: req.auth.user._id,
+      emergencyType: chat.effectiveEmergencyType,
+      language: chat.requestedLanguage,
+      query: chat.aiQuery,
+      onDelta: async (delta) => {
+        writeSseEvent(res, 'delta', { text: delta });
+      }
+    });
+
+    const assistantMessage = {
+      _id: createId('msg'),
+      role: 'assistant',
+      content: aiResponse.reply,
+      createdAt: new Date()
+    };
+
+    conversation.messages.push(userMessage, assistantMessage);
+    await conversation.save();
+
+    writeSseEvent(res, 'done', {
+      success: true,
+      message: messageFor(chat.requestedLanguage, 'chatProcessed'),
+      conversation: serializeConversation(conversation.toObject()),
+      userMessage: serializeMessage(userMessage),
+      assistantMessage: serializeMessage(assistantMessage),
+      aiSource: getAiServiceInfo(),
+      degraded: Boolean(aiResponse?.degraded)
+    });
+    res.end();
+  } catch (error) {
+    if (!res.headersSent) {
+      next(error);
+      return;
+    }
+
+    console.error('[chat.controller] streaming chat failed:', error);
+    writeSseEvent(res, 'error', {
+      success: false,
+      message: userSafeStreamError(),
+      localizedMessage: messageFor(requestedLanguage, 'chatProcessed')
+    });
+    res.end();
+  }
+};
 
 export const deleteConversation = catchAsync(async (req, res) => {
   const deletedConversation = await Conversation.findOneAndDelete({

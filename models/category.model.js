@@ -1,16 +1,19 @@
 import mongoose from 'mongoose';
 import { createId } from '../lib/id.js';
 
+const localizedStringSchema = new mongoose.Schema(
+  {
+    en: { type: String, default: '', trim: true },
+    it: { type: String, default: '', trim: true }
+  },
+  { _id: false }
+);
+
 const categorySchema = new mongoose.Schema(
   {
     _id: {
       type: String,
       default: () => createId('category')
-    },
-    name: {
-      type: String,
-      required: true,
-      trim: true
     },
     slug: {
       type: String,
@@ -18,10 +21,17 @@ const categorySchema = new mongoose.Schema(
       unique: true,
       index: true
     },
-    description: {
-      type: String,
-      default: '',
-      trim: true
+    names: {
+      type: localizedStringSchema,
+      required: true,
+      validate: {
+        validator: (value) => Boolean(value && String(value.en || '').trim()),
+        message: 'names.en is required'
+      }
+    },
+    descriptions: {
+      type: localizedStringSchema,
+      default: () => ({ en: '', it: '' })
     },
     sortOrder: {
       type: Number,
@@ -43,7 +53,7 @@ const categorySchema = new mongoose.Schema(
   }
 );
 
-categorySchema.index({ sortOrder: 1, name: 1 });
+categorySchema.index({ sortOrder: 1, 'names.en': 1 });
 
 const Category =
   mongoose.models.Category || mongoose.model('Category', categorySchema);
