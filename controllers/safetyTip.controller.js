@@ -114,9 +114,11 @@ export const listSafetyTips = catchAsync(async (req, res) => {
 export const getSafetyTipById = catchAsync(async (req, res) => {
   const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
   const tip = await SafetyTip.findOne({
-    $or: [{ _id: req.params.tipId }, { slug: req.params.tipId }],
     status: 'published',
-    ...languageQueryFor(language)
+    $and: [
+      { $or: [{ _id: req.params.tipId }, { slug: req.params.tipId }] },
+      languageQueryFor(language)
+    ]
   }).lean();
 
   if (!tip) {
