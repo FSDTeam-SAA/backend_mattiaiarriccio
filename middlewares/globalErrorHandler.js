@@ -6,7 +6,11 @@ const globalErrorHandler = (err, req, res, next) => {
 
   if (err.name === 'MulterError') {
     statusCode = StatusCodes.BAD_REQUEST;
-    message = err.message;
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      message = 'Image is too large. Maximum size is 10 MB.';
+    } else {
+      message = err.message;
+    }
   }
 
   if (err.http_code) {
@@ -28,6 +32,21 @@ const globalErrorHandler = (err, req, res, next) => {
   if (err.code === 11000) {
     statusCode = StatusCodes.CONFLICT;
     message = `Duplicate value for ${Object.keys(err.keyValue || {}).join(', ')}`;
+  }
+
+  const logPayload = {
+    method: req.method,
+    url: req.originalUrl,
+    statusCode,
+    name: err.name,
+    code: err.code,
+    message: err.message
+  };
+
+  if (statusCode >= 500) {
+    console.error('[errorHandler]', logPayload, err.stack);
+  } else {
+    console.warn('[errorHandler]', logPayload);
   }
 
   res.status(statusCode).json({
