@@ -14,11 +14,13 @@ import adminRoutes from './routes/admin.routes.js';
 import uploadRoutes from './routes/upload.routes.js';
 import notFound from './middlewares/notFound.js';
 import globalErrorHandler from './middlewares/globalErrorHandler.js';
+import requestLogger from './middlewares/requestLogger.js';
 import { getAiServiceInfo } from './services/ai.service.js';
 
 const app = express();
 
 app.use(cors());
+app.use(requestLogger);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
