@@ -96,6 +96,8 @@ const mapChecklistPayload = (checklist, categoryMap) => {
     icon: checklist.icon || '',
     coverImageUrl: checklist.coverImageUrl,
     status: checklist.status,
+    premiumOnly: Boolean(checklist.premiumOnly),
+    order: Number.isFinite(checklist.order) ? checklist.order : 0,
     createdBy: checklist.createdBy,
     itemCount: checklist.items.length,
     items: checklist.items.map((item) => ({
@@ -128,6 +130,8 @@ const mapSafetyTipPayload = (tip, categoryMap) => {
     status: tip.status,
     language: tip.language,
     featured: tip.featured,
+    premiumOnly: Boolean(tip.premiumOnly),
+    order: Number.isFinite(tip.order) ? tip.order : 0,
     createdAt: tip.createdAt,
     updatedAt: tip.updatedAt
   };
@@ -398,6 +402,8 @@ export const createAdminChecklist = catchAsync(async (req, res) => {
     icon: String(req.body.iconEmoji || req.body.icon_text || '').trim(),
     coverImageUrl,
     status: String(req.body.status || 'published').trim(),
+    premiumOnly: parseBooleanInput(req.body.premiumOnly) ?? false,
+    order: parseIntegerInput(req.body.order) ?? 0,
     createdBy: req.auth.user._id,
     items: normalizeItems(itemsInput)
   });
@@ -475,6 +481,14 @@ export const updateAdminChecklist = catchAsync(async (req, res) => {
 
   if (req.body.status !== undefined) {
     checklist.status = String(req.body.status).trim();
+  }
+
+  if (req.body.premiumOnly !== undefined) {
+    checklist.premiumOnly = parseBooleanInput(req.body.premiumOnly) ?? checklist.premiumOnly;
+  }
+
+  if (req.body.order !== undefined) {
+    checklist.order = parseIntegerInput(req.body.order) ?? checklist.order;
   }
 
   if (req.body.items !== undefined) {
@@ -588,7 +602,9 @@ export const createAdminSafetyTip = catchAsync(async (req, res) => {
     thumbnailUrl,
     status: String(req.body.status || 'published').trim(),
     language: ensureSupportedLanguage(req.body.language || 'en'),
-    featured: parseBooleanInput(req.body.featured) ?? false
+    featured: parseBooleanInput(req.body.featured) ?? false,
+    premiumOnly: parseBooleanInput(req.body.premiumOnly) ?? false,
+    order: parseIntegerInput(req.body.order) ?? 0
   });
 
   await logActivity({
@@ -696,6 +712,14 @@ export const updateAdminSafetyTip = catchAsync(async (req, res) => {
 
   if (req.body.featured !== undefined) {
     tip.featured = parseBooleanInput(req.body.featured) ?? tip.featured;
+  }
+
+  if (req.body.premiumOnly !== undefined) {
+    tip.premiumOnly = parseBooleanInput(req.body.premiumOnly) ?? tip.premiumOnly;
+  }
+
+  if (req.body.order !== undefined) {
+    tip.order = parseIntegerInput(req.body.order) ?? tip.order;
   }
 
   await tip.save();

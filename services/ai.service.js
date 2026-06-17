@@ -1,5 +1,7 @@
 import OpenAI from 'openai';
 import PromptConfig from '../models/promptConfig.model.js';
+import { getSetting } from './settings.service.js';
+import { isPremiumUser } from './premium.service.js';
 import {
   defaultWelcomeFor,
   defaultSystemInstructionFor,
@@ -12,6 +14,10 @@ import {
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5-mini';
 export const DEFAULT_AI_EMERGENCY_TYPE = 'General Emergency';
+
+// Tier-specific output caps. Premium gets a larger budget for richer guidance.
+const FREE_MAX_TOKENS = 600;
+const PREMIUM_MAX_TOKENS = 1500;
 
 let openaiClient = null;
 let warnedMissingKey = false;
@@ -77,14 +83,54 @@ const normalizeEmergencyType = (value) => {
   return cleaned || DEFAULT_AI_EMERGENCY_TYPE;
 };
 
-const buildAiRequest = async ({ query, emergencyType, language }) => {
+/**
+ * Resolves the tier-specific chat configuration for a caller.
+ *
+ * - systemPrompt: the admin-editable Settings.premiumPrompt (premium users) or
+ *   Settings.freePrompt (free users). If that Settings value is empty, callers
+ *   should fall back to the per-language system instruction this module builds.
+ * - model: from env OPENAI_MODEL (unchanged from existing behaviour).
+ * - maxTokens: premium gets a higher cap than free.
+ *
+ * @param {object|null} user - req.auth.user (or null for anonymous/internal use)
+ * @returns {Promise<{ systemPrompt: string, model: string, maxTokens: number }>}
+ */
+export const resolvePromptConfig = async (user) => {
+  const premium = isPremiumUser(user);
+
+  let systemPrompt = '';
+  try {
+    systemPrompt = await getSetting(premium ? 'premiumPrompt' : 'freePrompt');
+  } catch (error) {
+    console.error(
+      '[ai.service] Failed to read tier prompt from settings; falling back to defaults:',
+      error?.message || error
+    );
+    systemPrompt = '';
+  }
+
+  return {
+    systemPrompt: typeof systemPrompt === 'string' ? systemPrompt.trim() : '',
+    model: OPENAI_MODEL,
+    maxTokens: premium ? PREMIUM_MAX_TOKENS : FREE_MAX_TOKENS
+  };
+};
+
+const buildAiRequest = async ({ query, emergencyType, language, caller }) => {
   const lang = normalizeLanguage(language);
   const config = await readPromptConfig(lang);
   const hasExplicitEmergencyType = Boolean(String(emergencyType || '').trim());
   const resolvedEmergencyType = normalizeEmergencyType(emergencyType);
 
+  const promptConfig = await resolvePromptConfig(caller);
+
+  // Tier prompt (Settings.freePrompt/premiumPrompt) overrides the per-language
+  // base instruction when set; otherwise fall back to the existing instruction.
+  const systemInstruction =
+    promptConfig.systemPrompt || config.systemInstruction;
+
   const systemMessage = buildSystemMessage({
-    systemInstruction: config.systemInstruction,
+    systemInstruction,
     welcomeInstruction: config.welcomeInstruction,
     fallbackMessage: config.fallbackMessage,
     languageInstruction: languageInstructionFor(lang),
@@ -116,7 +162,7 @@ const buildAiRequest = async ({ query, emergencyType, language }) => {
     };
   };
 
-  return { messages, offlineFallback };
+  return { messages, offlineFallback, maxTokens: promptConfig.maxTokens };
 };
 
 const logAiProviderError = (error) => {
@@ -162,12 +208,14 @@ export const getAiServiceInfo = () => ({
 export const requestAiReply = async ({
   query,
   emergencyType,
-  language
+  language,
+  caller = null
 }) => {
-  const { messages, offlineFallback } = await buildAiRequest({
+  const { messages, offlineFallback, maxTokens } = await buildAiRequest({
     query,
     emergencyType,
-    language
+    language,
+    caller
   });
 
   try {
@@ -176,7 +224,7 @@ export const requestAiReply = async ({
     const completion = await client.chat.completions.create({
       model: OPENAI_MODEL,
       messages,
-      max_completion_tokens: 1200,
+      max_completion_tokens: maxTokens,
       reasoning_effort: 'minimal',
       verbosity: 'low'
     });
@@ -215,12 +263,14 @@ export const requestAiReplyStream = async ({
   query,
   emergencyType,
   language,
-  onDelta
+  onDelta,
+  caller = null
 }) => {
-  const { messages, offlineFallback } = await buildAiRequest({
+  const { messages, offlineFallback, maxTokens } = await buildAiRequest({
     query,
     emergencyType,
-    language
+    language,
+    caller
   });
   const emitDelta = typeof onDelta === 'function' ? onDelta : async () => {};
   let emittedAnyDelta = false;
@@ -231,7 +281,7 @@ export const requestAiReplyStream = async ({
     const stream = await client.chat.completions.create({
       model: OPENAI_MODEL,
       messages,
-      max_completion_tokens: 1200,
+      max_completion_tokens: maxTokens,
       reasoning_effort: 'minimal',
       verbosity: 'low',
       stream: true

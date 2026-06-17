@@ -16,6 +16,7 @@ import {
   resolveRequestLanguage
 } from '../services/language.service.js';
 import { resolveImageUrl } from '../services/media.service.js';
+import { isPremiumUser } from '../services/premium.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { parseArrayInput } from '../utils/requestParsers.js';
 
@@ -226,6 +227,40 @@ const formatChecklist = (checklist, progress, categoryMap, language = 'en') => {
   };
 };
 
+const formatLockedChecklist = (checklist, categoryMap, language = 'en') => {
+  const category = categoryMap?.get(checklist.category);
+
+  return {
+    id: checklist._id,
+    type: checklist.type,
+    ownerId: checklist.ownerId,
+    sourceChecklistId: checklist.sourceChecklistId || null,
+    isSharedDefault: isSharedChecklist(checklist),
+    title: checklist.title,
+    category: category
+      ? localizedCategoryName(category, language)
+      : checklist.category,
+    categorySlug: checklist.category,
+    description: checklist.description,
+    language: normalizeLanguageCode(checklist.language, 'en'),
+    iconUrl: checklist.iconUrl,
+    icon: checklist.icon || '',
+    coverImageUrl: checklist.coverImageUrl,
+    status: checklist.status,
+    premiumOnly: true,
+    locked: true,
+    items: [],
+    progress: {
+      completedCount: 0,
+      totalCount: 0,
+      percentage: 0
+    }
+  };
+};
+
+const isChecklistLockedForUser = (checklist, user) =>
+  Boolean(checklist?.premiumOnly) && !isPremiumUser(user);
+
 const getOrCreateChecklistProgress = async (userId, checklistId) => {
   let progress = await ChecklistProgress.findOne({ userId, checklistId });
 
@@ -300,10 +335,14 @@ export const listChecklists = catchAsync(async (req, res) => {
     });
   }
 
+  const user = req.auth.user;
+
   sendSuccess(res, {
     message: 'Checklists fetched successfully',
     data: checklists.map((checklist) =>
-      formatChecklist(checklist, progressMap.get(checklist._id), categoryMap, language)
+      isChecklistLockedForUser(checklist, user)
+        ? formatLockedChecklist(checklist, categoryMap, language)
+        : formatChecklist(checklist, progressMap.get(checklist._id), categoryMap, language)
     ),
     meta: {
       categories: managedCategoryNames
@@ -324,6 +363,15 @@ export const getChecklistById = catchAsync(async (req, res) => {
     !isChecklistVisibleForLanguage(checklist, language)
   ) {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
+  }
+
+  if (isChecklistLockedForUser(checklist, req.auth.user)) {
+    const err = new ApiError(
+      StatusCodes.FORBIDDEN,
+      'This checklist is available to premium members only'
+    );
+    err.code = 'PREMIUM_REQUIRED';
+    throw err;
   }
 
   const [progress, categoryMap] = await Promise.all([

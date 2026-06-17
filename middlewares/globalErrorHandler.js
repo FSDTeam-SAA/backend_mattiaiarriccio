@@ -49,9 +49,16 @@ const globalErrorHandler = (err, req, res, next) => {
     console.warn('[errorHandler]', logPayload);
   }
 
+  // Surface a stable machine-readable error code (e.g. DAILY_LIMIT_REACHED,
+  // PREMIUM_REQUIRED) and optional structured details when an ApiError sets them.
+  // Mongo duplicate-key uses a numeric err.code (11000) which we intentionally skip.
+  const machineCode = typeof err.code === 'string' ? err.code : undefined;
+
   res.status(statusCode).json({
     success: false,
     message,
+    ...(machineCode && { code: machineCode }),
+    ...(err.details !== undefined && { details: err.details }),
     ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
   });
 };

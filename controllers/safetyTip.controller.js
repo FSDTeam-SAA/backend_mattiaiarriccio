@@ -11,9 +11,10 @@ import {
   normalizeLanguageCode,
   resolveRequestLanguage
 } from '../services/language.service.js';
+import { isPremiumUser } from '../services/premium.service.js';
 import { paginate, parsePagination, sendSuccess } from '../utils/response.js';
 
-const mapSafetyTipCard = (tip, categoryMap, language) => {
+const mapSafetyTipCard = (tip, categoryMap, language, { locked = false } = {}) => {
   const category = categoryMap.get(tip.category);
   return {
     id: tip._id,
@@ -28,9 +29,14 @@ const mapSafetyTipCard = (tip, categoryMap, language) => {
     tags: tip.tags,
     language: normalizeLanguageCode(tip.language, 'en'),
     featured: tip.featured,
+    premiumOnly: Boolean(tip.premiumOnly),
+    locked,
     updatedAt: tip.updatedAt
   };
 };
+
+const isSafetyTipLockedForUser = (tip, user) =>
+  Boolean(tip?.premiumOnly) && !isPremiumUser(user);
 
 const languageQueryFor = (language) =>
   language === 'en'
@@ -95,8 +101,13 @@ export const listSafetyTips = catchAsync(async (req, res) => {
     });
   }
 
+  const user = req.auth.user;
   const paged = paginate(
-    tips.map((tip) => mapSafetyTipCard(tip, categoryMap, language)),
+    tips.map((tip) =>
+      mapSafetyTipCard(tip, categoryMap, language, {
+        locked: isSafetyTipLockedForUser(tip, user)
+      })
+    ),
     page,
     limit
   );
@@ -125,6 +136,15 @@ export const getSafetyTipById = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Safety tip not found');
   }
 
+  if (isSafetyTipLockedForUser(tip, req.auth.user)) {
+    const err = new ApiError(
+      StatusCodes.FORBIDDEN,
+      'This guide is available to premium members only'
+    );
+    err.code = 'PREMIUM_REQUIRED';
+    throw err;
+  }
+
   const [relatedTips, categoryMap] = await Promise.all([
     SafetyTip.find({
       _id: { $ne: tip._id },
@@ -138,6 +158,7 @@ export const getSafetyTipById = catchAsync(async (req, res) => {
   ]);
 
   const category = categoryMap.get(tip.category);
+  const user = req.auth.user;
 
   sendSuccess(res, {
     message: 'Safety tip fetched successfully',
@@ -158,10 +179,14 @@ export const getSafetyTipById = catchAsync(async (req, res) => {
       status: tip.status,
       language: normalizeLanguageCode(tip.language, 'en'),
       featured: tip.featured,
+      premiumOnly: Boolean(tip.premiumOnly),
+      locked: false,
       createdAt: tip.createdAt,
       updatedAt: tip.updatedAt,
       relatedTips: relatedTips.map((related) =>
-        mapSafetyTipCard(related, categoryMap, language)
+        mapSafetyTipCard(related, categoryMap, language, {
+          locked: isSafetyTipLockedForUser(related, user)
+        })
       )
     }
   });

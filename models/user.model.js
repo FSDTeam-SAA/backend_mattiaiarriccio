@@ -57,6 +57,50 @@ const userSchema = new mongoose.Schema(
     passwordHash: {
       type: String,
       required: true
+    },
+    tier: {
+      type: String,
+      enum: ['free', 'premium'],
+      default: 'free'
+    },
+    premiumSource: {
+      type: String,
+      enum: ['google_play', 'app_store', 'manual', 'coupon', null],
+      default: null
+    },
+    premiumExpiresAt: {
+      type: Date,
+      default: null
+    },
+    premiumGrantedBy: {
+      type: String,
+      default: null
+    },
+    // Manual/coupon grant store, kept independent of store subscriptions so
+    // recomputeTier() can combine both sources. null expiresAt + active = lifetime.
+    manualPremiumActive: {
+      type: Boolean,
+      default: false
+    },
+    manualPremiumExpiresAt: {
+      type: Date,
+      default: null
+    },
+    manualPremiumSource: {
+      type: String,
+      enum: ['manual', 'coupon', null],
+      default: null
+    },
+    dailyUsage: {
+      type: new mongoose.Schema(
+        {
+          date: { type: String, default: '' },
+          messages: { type: Number, default: 0 },
+          chats: { type: Number, default: 0 }
+        },
+        { _id: false }
+      ),
+      default: () => ({ date: '', messages: 0, chats: 0 })
     }
   },
   {
@@ -67,6 +111,7 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ email: 1, role: 1 }, { unique: true });
+userSchema.index({ premiumExpiresAt: 1 });
 
 const User = mongoose.models.User || mongoose.model('User', userSchema);
 

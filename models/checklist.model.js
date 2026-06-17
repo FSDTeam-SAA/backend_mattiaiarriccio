@@ -81,6 +81,15 @@ const checklistSchema = new mongoose.Schema(
       enum: ['draft', 'published'],
       default: 'published'
     },
+    premiumOnly: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+    order: {
+      type: Number,
+      default: 0
+    },
     language: {
       type: String,
       default: 'en',

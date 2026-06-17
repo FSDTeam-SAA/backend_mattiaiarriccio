@@ -15,6 +15,7 @@ import {
   messageFor,
   resolveRequestLanguage
 } from '../services/language.service.js';
+import { matchEmergencyResponse } from '../services/emergency.service.js';
 
 const summarizeConversation = (conversation) => ({
   id: conversation._id,
@@ -259,12 +260,21 @@ export const getConversationById = catchAsync(async (req, res) => {
 export const sendChatMessage = catchAsync(async (req, res) => {
   const chat = await parseChatRequest(req);
 
-  const aiResponse = await requestAiReply({
-    userId: req.auth.user._id,
-    emergencyType: chat.effectiveEmergencyType,
-    language: chat.requestedLanguage,
-    query: chat.aiQuery
+  // Emergency override: if a matching admin response exists, return it verbatim
+  // and skip the AI entirely (the AI/streaming costs/latency are bypassed).
+  const emergencyMatch = await matchEmergencyResponse({
+    text: chat.message,
+    language: chat.requestedLanguage
   });
+
+  const aiResponse = emergencyMatch
+    ? { reply: emergencyMatch.responseTemplate, emergency: true }
+    : await requestAiReply({
+        emergencyType: chat.effectiveEmergencyType,
+        language: chat.requestedLanguage,
+        query: chat.aiQuery,
+        caller: req.auth.user
+      });
 
   const conversation = ensureConversationForMessage({
     conversation: chat.conversation,
@@ -300,7 +310,8 @@ export const sendChatMessage = catchAsync(async (req, res) => {
       userMessage: serializeMessage(userMessage),
       assistantMessage: serializeMessage(assistantMessage),
       aiSource: getAiServiceInfo(),
-      degraded: Boolean(aiResponse?.degraded)
+      degraded: Boolean(aiResponse?.degraded),
+      emergencyOverride: Boolean(aiResponse?.emergency)
     }
   });
 });
@@ -328,24 +339,41 @@ export const sendChatMessageStream = async (req, res, next) => {
       createdAt: new Date()
     };
 
+    // Emergency override: resolve BEFORE opening the OpenAI stream so a matched
+    // admin response is delivered through the same SSE delta/done events.
+    const emergencyMatch = await matchEmergencyResponse({
+      text: chat.message,
+      language: chat.requestedLanguage
+    });
+
     setSseHeaders(res);
     writeSseEvent(res, 'meta', {
       conversationId: conversation._id,
       emergencyType: conversation.emergencyType || '',
       language: conversation.language || 'en',
       userMessage: serializeMessage(userMessage),
-      aiSource: getAiServiceInfo()
+      aiSource: getAiServiceInfo(),
+      emergencyOverride: Boolean(emergencyMatch)
     });
 
-    const aiResponse = await requestAiReplyStream({
-      userId: req.auth.user._id,
-      emergencyType: chat.effectiveEmergencyType,
-      language: chat.requestedLanguage,
-      query: chat.aiQuery,
-      onDelta: async (delta) => {
-        writeSseEvent(res, 'delta', { text: delta });
-      }
-    });
+    let aiResponse;
+    if (emergencyMatch) {
+      aiResponse = {
+        reply: emergencyMatch.responseTemplate,
+        emergency: true
+      };
+      writeSseEvent(res, 'delta', { text: emergencyMatch.responseTemplate });
+    } else {
+      aiResponse = await requestAiReplyStream({
+        emergencyType: chat.effectiveEmergencyType,
+        language: chat.requestedLanguage,
+        query: chat.aiQuery,
+        caller: req.auth.user,
+        onDelta: async (delta) => {
+          writeSseEvent(res, 'delta', { text: delta });
+        }
+      });
+    }
 
     const assistantMessage = {
       _id: createId('msg'),
@@ -364,7 +392,8 @@ export const sendChatMessageStream = async (req, res, next) => {
       userMessage: serializeMessage(userMessage),
       assistantMessage: serializeMessage(assistantMessage),
       aiSource: getAiServiceInfo(),
-      degraded: Boolean(aiResponse?.degraded)
+      degraded: Boolean(aiResponse?.degraded),
+      emergencyOverride: Boolean(aiResponse?.emergency)
     });
     res.end();
   } catch (error) {
