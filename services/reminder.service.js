@@ -170,7 +170,7 @@ export const dispatchDueJobs = async () => {
         const result = await sendToUser(claimed.userId, {
           title: claimed.title,
           body: claimed.body,
-          data: { type: claimed.type, refId: claimed.refId || '' }
+          data: { type: claimed.type, refId: claimed.refId || '', screen: 'home' }
         });
         // sendToUser never throws; a skip is still a successful "intent recorded".
         if (result?.skipped) {
