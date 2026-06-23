@@ -8,6 +8,9 @@ import ChecklistProgress from '../models/checklistProgress.model.js';
 import Conversation from '../models/conversation.model.js';
 import LegalDocument from '../models/legalDocument.model.js';
 import SafetyTip from '../models/safetyTip.model.js';
+import Material from '../models/material.model.js';
+import Subscription from '../models/subscription.model.js';
+import NotificationJob from '../models/notificationJob.model.js';
 import { appConfig } from '../data/appConfig.js';
 import { createId } from '../lib/id.js';
 import {
@@ -215,6 +218,31 @@ export const changePassword = catchAsync(async (req, res) => {
       language === 'it'
         ? 'Password aggiornata correttamente'
         : 'Password changed successfully'
+  });
+});
+
+export const deleteAccount = catchAsync(async (req, res) => {
+  const userId = req.auth.user._id;
+
+  const user = await User.findById(userId);
+  if (!user) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'User not found');
+  }
+
+  await Promise.all([
+    Conversation.deleteMany({ userId }),
+    ChecklistProgress.deleteMany({ userId }),
+    Notification.deleteMany({ userId }),
+    NotificationJob.deleteMany({ userId }),
+    Subscription.deleteMany({ userId }),
+    Material.deleteMany({ ownerId: userId }),
+    Checklist.deleteMany({ type: 'custom', ownerId: userId })
+  ]);
+
+  await User.findByIdAndDelete(userId);
+
+  sendSuccess(res, {
+    message: 'Account deleted successfully'
   });
 });
 

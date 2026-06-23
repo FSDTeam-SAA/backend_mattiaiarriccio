@@ -3,6 +3,7 @@ import { requireAuth } from '../middlewares/auth.js';
 import upload from '../middlewares/upload.js';
 import {
   changePassword,
+  deleteAccount,
   getCurrentUser,
   getUserPreferences,
   updateCurrentUser,
@@ -23,5 +24,6 @@ router.patch('/me', avatarUpload, updateCurrentUser);
 router.get('/me/preferences', getUserPreferences);
 router.patch('/me/preferences', updateUserPreferences);
 router.patch('/me/password', changePassword);
+router.delete('/me', deleteAccount);
 
 export default router;

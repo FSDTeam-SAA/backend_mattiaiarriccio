@@ -18,6 +18,7 @@ import ApiError from '../utils/ApiError.js';
  * - emergencyOverrideEnabled (true): if true, matched emergency responses bypass the AI
  * - reminderDefaults (object)    : default reminder offsets/channel for materials
  * - notificationsEnabled (true)  : master switch for the reminder/notification engine
+ * - chatWelcomeMessage (object)  : { en, it } welcome bubble shown in chat on first open
  */
 export const DEFAULT_SETTINGS = {
   freeDailyMessageLimit: 20,
@@ -46,7 +47,33 @@ export const DEFAULT_SETTINGS = {
     offsetDays: [7, 1],
     channel: 'local'
   },
-  notificationsEnabled: true
+  notificationsEnabled: true,
+  chatWelcomeMessage: {
+    en:
+      "Hello 👋\nI'm WeSafe AI, your assistant for safety, emergencies, and preparedness.\n\n" +
+      'I can help you with:\n\n' +
+      '* 🚨 Blackouts, fires, earthquakes, and floods\n' +
+      '* 🧰 72h kits, home kits, and checklists\n' +
+      '* 🩹 Basic first aid\n' +
+      '* 🛡️ Practical safety advice\n\n' +
+      'Examples:\n' +
+      '👉 "What should I do during a blackout?"\n' +
+      '👉 "What should I put in a 72h kit?"\n\n' +
+      'Being prepared today can make a difference tomorrow.\n' +
+      'Where would you like to start?',
+    it:
+      'Ciao 👋\nSono WeSafe AI, il tuo assistente dedicato a sicurezza, emergenze e preparazione.\n\n' +
+      'Posso aiutarti con:\n\n' +
+      '* 🚨 Blackout, incendi, terremoti e alluvioni\n' +
+      '* 🧰 Kit 72h, kit casa e checklist\n' +
+      '* 🩹 Primo soccorso base\n' +
+      '* 🛡️ Consigli pratici per ridurre i rischi\n\n' +
+      'Esempi:\n' +
+      '👉 "Cosa fare durante un blackout?"\n' +
+      '👉 "Cosa mettere in un kit 72h?"\n\n' +
+      'Prepararsi oggi può fare la differenza domani.\n' +
+      'Da dove vuoi iniziare?'
+  }
 };
 
 const CACHE_TTL_MS = 30 * 1000;
@@ -113,6 +140,14 @@ const VALIDATORS = {
   },
   notificationsEnabled: (v) => {
     if (typeof v !== 'boolean') throw 'notificationsEnabled must be a boolean';
+    return v;
+  },
+  chatWelcomeMessage: (v) => {
+    if (!isPlainObject(v)) throw 'chatWelcomeMessage must be an object { en: string, it: string }';
+    if (v.en !== undefined && (typeof v.en !== 'string' || !v.en.trim()))
+      throw 'chatWelcomeMessage.en must be a non-empty string';
+    if (v.it !== undefined && (typeof v.it !== 'string' || !v.it.trim()))
+      throw 'chatWelcomeMessage.it must be a non-empty string';
     return v;
   }
 };

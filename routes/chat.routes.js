@@ -8,6 +8,7 @@ import {
   sendChatMessage,
   sendChatMessageStream
 } from '../controllers/chat.controller.js';
+import { getChatConfig } from '../controllers/chatConfig.controller.js';
 
 const router = Router();
 
@@ -33,6 +34,8 @@ const enforceChatLimitForNewConversation = (req, res, next) => {
 };
 
 router.use(requireAuth('user'));
+
+router.get('/config', getChatConfig);
 
 router.get('/conversations', listConversations);
 router.get('/history', listConversations);
