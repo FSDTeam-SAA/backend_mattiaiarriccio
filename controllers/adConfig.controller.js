@@ -28,7 +28,10 @@ export const getAdConfig = catchAsync(async (req, res) => {
     getSetting('admUnitIds')
   ]);
 
-  const showAds = adsEnabled === true && !isPremiumUser(req.auth.user);
+  // req.auth is only present if the user sent a valid token (optional auth).
+  // Unauthenticated requests default to showing ads; premium check only runs
+  // when a logged-in user is known.
+  const showAds = adsEnabled === true && (req.auth?.user ? !isPremiumUser(req.auth.user) : true);
 
   const platform = resolvePlatform(req);
   const unitIds =

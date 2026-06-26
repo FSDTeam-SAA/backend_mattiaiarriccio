@@ -88,14 +88,16 @@ const verifyGoogleProfile = async ({ idToken, accessToken }) => {
         audience: allowedAudiences
       });
     } catch (strictErr) {
-      console.error('[Google Auth] ID token verify failed:', strictErr?.message);
+      const googleErrMsg = strictErr?.message || 'Unknown Google error';
+      console.error('[Google Auth] ID token verify failed:', googleErrMsg);
+      console.error('[Google Auth] allowedAudiences:', allowedAudiences);
 
       if (!cleanedAccessToken) {
+        // Always surface the real Google error — it's a config/client-ID
+        // mismatch, not a secret; hiding it only slows down diagnosis.
         throw new ApiError(
           StatusCodes.UNAUTHORIZED,
-          process.env.NODE_ENV !== 'production'
-            ? `Google token error: ${strictErr?.message}`
-            : 'Invalid Google sign-in token'
+          `Google token verification failed: ${googleErrMsg}`
         );
       }
     }
@@ -158,9 +160,7 @@ const verifyGoogleProfile = async ({ idToken, accessToken }) => {
 
     throw new ApiError(
       StatusCodes.UNAUTHORIZED,
-      process.env.NODE_ENV !== 'production'
-        ? `Google access token error: ${error?.message || 'Unknown error'}`
-        : 'Invalid Google sign-in token'
+      `Google access token error: ${error?.message || 'Unknown error'}`
     );
   }
 };
