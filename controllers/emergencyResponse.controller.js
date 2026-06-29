@@ -7,6 +7,11 @@ import EmergencyResponse from '../models/emergencyResponse.model.js';
 import { listActiveEmergencyResponses } from '../services/emergency.service.js';
 import { logAudit } from '../services/audit.service.js';
 import {
+  normalizeEmergencyPlaybook,
+  normalizeIntentKey,
+  routeEmergencyResponse
+} from '../services/emergency.service.js';
+import {
   resolveRequestLanguage,
   ensureSupportedLanguage,
   normalizeLanguageCode
@@ -17,21 +22,42 @@ import {
   parseIntegerInput
 } from '../utils/requestParsers.js';
 
-const serializeEmergencyResponse = (response) => ({
-  id: response._id,
-  title: response.title,
-  category: response.category || '',
-  triggerKeywords: Array.isArray(response.triggerKeywords)
-    ? response.triggerKeywords
-    : [],
-  responseTemplate: response.responseTemplate,
-  language: normalizeLanguageCode(response.language, 'en'),
-  order: response.order ?? 0,
-  active: response.active !== false,
-  createdBy: response.createdBy || null,
-  createdAt: response.createdAt,
-  updatedAt: response.updatedAt
-});
+const SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
+const RESPONSE_MODES = new Set([
+  'stored_high_confidence',
+  'ai_with_context',
+  'ai_only'
+]);
+const FOLLOW_UP_POLICIES = new Set([
+  'ai_when_needed',
+  'always_ai',
+  'stored_only'
+]);
+
+const serializeEmergencyResponse = (response) => {
+  const playbook = normalizeEmergencyPlaybook(response);
+
+  return {
+    id: playbook._id,
+    title: playbook.title,
+    category: playbook.category || '',
+    triggerKeywords: playbook.triggerKeywords,
+    matchPhrases: playbook.matchPhrases,
+    negativeKeywords: playbook.negativeKeywords,
+    responseTemplate: playbook.responseTemplate,
+    language: normalizeLanguageCode(playbook.language, 'en'),
+    intentKey: playbook.intentKey,
+    severity: playbook.severity,
+    responseMode: playbook.responseMode,
+    followUpPolicy: playbook.followUpPolicy,
+    aiContext: playbook.aiContext,
+    order: playbook.order ?? 0,
+    active: playbook.active !== false,
+    createdBy: response.createdBy || null,
+    createdAt: response.createdAt,
+    updatedAt: response.updatedAt
+  };
+};
 
 const normalizeTriggerKeywords = (input) => {
   const parsed = parseArrayInput(input);
@@ -40,6 +66,65 @@ const normalizeTriggerKeywords = (input) => {
     .map((keyword) => String(keyword).trim())
     .filter(Boolean);
 };
+
+const normalizeStringArray = normalizeTriggerKeywords;
+
+const enumValue = (value, allowed, fallback) => {
+  const normalized = String(value || '').trim();
+  return allowed.has(normalized) ? normalized : fallback;
+};
+
+const buildEmergencyPayload = (body, { existing = null } = {}) => {
+  const title = String(body.title ?? existing?.title ?? '').trim();
+  const category = String(body.category ?? existing?.category ?? '').trim();
+  const intentInput = String(body.intentKey ?? existing?.intentKey ?? '').trim();
+
+  return {
+    title,
+    category,
+    triggerKeywords:
+      body.triggerKeywords !== undefined
+        ? normalizeStringArray(body.triggerKeywords)
+        : normalizeStringArray(existing?.triggerKeywords),
+    matchPhrases:
+      body.matchPhrases !== undefined
+        ? normalizeStringArray(body.matchPhrases)
+        : normalizeStringArray(existing?.matchPhrases),
+    negativeKeywords:
+      body.negativeKeywords !== undefined
+        ? normalizeStringArray(body.negativeKeywords)
+        : normalizeStringArray(existing?.negativeKeywords),
+    responseTemplate: String(
+      body.responseTemplate ?? existing?.responseTemplate ?? ''
+    ).trim(),
+    language: ensureSupportedLanguage(body.language ?? existing?.language ?? 'en'),
+    intentKey: intentInput
+      ? normalizeIntentKey(intentInput)
+      : normalizeIntentKey(category || title),
+    severity: enumValue(body.severity ?? existing?.severity, SEVERITIES, 'medium'),
+    responseMode: enumValue(
+      body.responseMode ?? existing?.responseMode,
+      RESPONSE_MODES,
+      'stored_high_confidence'
+    ),
+    followUpPolicy: enumValue(
+      body.followUpPolicy ?? existing?.followUpPolicy,
+      FOLLOW_UP_POLICIES,
+      'ai_when_needed'
+    ),
+    aiContext: String(body.aiContext ?? existing?.aiContext ?? '').trim()
+  };
+};
+
+const serializeRoutingPreview = (decision) => ({
+  routingSource: decision.source,
+  routingConfidence: decision.confidence,
+  matchedPlaybookId: decision.matchedPlaybookId || '',
+  matchedPlaybookTitle: decision.matchedPlaybook?.title || '',
+  routingReason: decision.reason,
+  followUp: Boolean(decision.followUp),
+  topMatches: decision.scores || []
+});
 
 /**
  * Public/user-facing: GET /api/v1/emergency-responses?category=&language=
@@ -94,13 +179,12 @@ export const listAdminEmergencyResponses = catchAsync(async (req, res) => {
  * Admin: POST /api/v1/admin/emergency-responses
  */
 export const createEmergencyResponse = catchAsync(async (req, res) => {
-  const title = String(req.body.title || '').trim();
-  if (!title) {
+  const payload = buildEmergencyPayload(req.body);
+  if (!payload.title) {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'title is required');
   }
 
-  const responseTemplate = String(req.body.responseTemplate || '').trim();
-  if (!responseTemplate) {
+  if (!payload.responseTemplate) {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'responseTemplate is required');
   }
 
@@ -109,11 +193,7 @@ export const createEmergencyResponse = catchAsync(async (req, res) => {
 
   const response = await EmergencyResponse.create({
     _id: createId('emergency'),
-    title,
-    category: String(req.body.category || '').trim(),
-    triggerKeywords: normalizeTriggerKeywords(req.body.triggerKeywords),
-    responseTemplate,
-    language: ensureSupportedLanguage(req.body.language || 'en'),
+    ...payload,
     order: order ?? 0,
     active: activeValue ?? true,
     createdBy: req.auth.user._id
@@ -150,31 +230,17 @@ export const updateEmergencyResponse = catchAsync(async (req, res) => {
     if (!title) {
       throw new ApiError(StatusCodes.BAD_REQUEST, 'title cannot be empty');
     }
-    response.title = title;
   }
 
-  if (req.body.category !== undefined) {
-    response.category = String(req.body.category).trim();
+  if (req.body.responseTemplate !== undefined && !String(req.body.responseTemplate).trim()) {
+    throw new ApiError(
+      StatusCodes.BAD_REQUEST,
+      'responseTemplate cannot be empty'
+    );
   }
 
-  if (req.body.triggerKeywords !== undefined) {
-    response.triggerKeywords = normalizeTriggerKeywords(req.body.triggerKeywords);
-  }
-
-  if (req.body.responseTemplate !== undefined) {
-    const responseTemplate = String(req.body.responseTemplate).trim();
-    if (!responseTemplate) {
-      throw new ApiError(
-        StatusCodes.BAD_REQUEST,
-        'responseTemplate cannot be empty'
-      );
-    }
-    response.responseTemplate = responseTemplate;
-  }
-
-  if (req.body.language !== undefined) {
-    response.language = ensureSupportedLanguage(req.body.language);
-  }
+  const payload = buildEmergencyPayload(req.body, { existing: response });
+  Object.assign(response, payload);
 
   if (req.body.order !== undefined) {
     const order = parseIntegerInput(req.body.order);
@@ -205,6 +271,50 @@ export const updateEmergencyResponse = catchAsync(async (req, res) => {
   sendSuccess(res, {
     message: 'Emergency response updated successfully',
     data: serializeEmergencyResponse(response.toObject())
+  });
+});
+
+/**
+ * Admin: POST /api/v1/admin/emergency-responses/preview-route
+ * Tests how a draft/current playbook would route a sample user message.
+ */
+export const previewEmergencyRoute = catchAsync(async (req, res) => {
+  const text = String(req.body.text || req.body.message || '').trim();
+  if (!text) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'text is required');
+  }
+
+  const draftInput = req.body.playbook || req.body.draft || null;
+  const extraResponses = [];
+
+  if (draftInput && typeof draftInput === 'object') {
+    const payload = buildEmergencyPayload(
+      {
+        ...draftInput,
+        title: draftInput.title || 'Draft playbook',
+        responseTemplate:
+          draftInput.responseTemplate || 'Draft emergency response'
+      },
+      {}
+    );
+    extraResponses.push({
+      _id: draftInput.id || draftInput._id || 'draft',
+      ...payload,
+      order: parseIntegerInput(draftInput.order) ?? -1,
+      active: true
+    });
+  }
+
+  const decision = await routeEmergencyResponse({
+    text,
+    language: req.body.language || draftInput?.language,
+    emergencyType: req.body.emergencyType || draftInput?.category || draftInput?.title,
+    extraResponses
+  });
+
+  sendSuccess(res, {
+    message: 'Emergency route preview generated successfully',
+    data: serializeRoutingPreview(decision)
   });
 });
 

@@ -121,7 +121,13 @@ export const resolvePromptConfig = async (user) => {
   };
 };
 
-const buildAiRequest = async ({ query, emergencyType, language, caller }) => {
+const buildAiRequest = async ({
+  query,
+  emergencyType,
+  language,
+  caller,
+  fallbackReply = ''
+}) => {
   const lang = normalizeLanguage(language);
   const config = await readPromptConfig(lang);
   const hasExplicitEmergencyType = Boolean(String(emergencyType || '').trim());
@@ -149,6 +155,19 @@ const buildAiRequest = async ({ query, emergencyType, language, caller }) => {
   ];
 
   const offlineFallback = () => {
+    const approvedFallback = String(fallbackReply || '').trim();
+    if (approvedFallback) {
+      return {
+        reply: approvedFallback,
+        raw: {
+          id: null,
+          model: 'stored-emergency-playbook'
+        },
+        degraded: true,
+        fallbackSource: 'stored'
+      };
+    }
+
     const reply =
       buildOfflineEmergencyGuide({
         emergencyType: resolvedEmergencyType,
@@ -214,13 +233,15 @@ export const requestAiReply = async ({
   query,
   emergencyType,
   language,
-  caller = null
+  caller = null,
+  fallbackReply = ''
 }) => {
   const { messages, offlineFallback, maxTokens } = await buildAiRequest({
     query,
     emergencyType,
     language,
-    caller
+    caller,
+    fallbackReply
   });
 
   try {
@@ -269,13 +290,15 @@ export const requestAiReplyStream = async ({
   emergencyType,
   language,
   onDelta,
-  caller = null
+  caller = null,
+  fallbackReply = ''
 }) => {
   const { messages, offlineFallback, maxTokens } = await buildAiRequest({
     query,
     emergencyType,
     language,
-    caller
+    caller,
+    fallbackReply
   });
   const emitDelta = typeof onDelta === 'function' ? onDelta : async () => {};
   let emittedAnyDelta = false;

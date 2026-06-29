@@ -15,7 +15,11 @@ import {
   messageFor,
   resolveRequestLanguage
 } from '../services/language.service.js';
-import { matchEmergencyResponse } from '../services/emergency.service.js';
+import {
+  buildPlaybookAiContext,
+  routeEmergencyResponse,
+  ROUTING_SOURCES
+} from '../services/emergency.service.js';
 
 const summarizeConversation = (conversation) => ({
   id: conversation._id,
@@ -33,6 +37,13 @@ const serializeMessage = (message) => ({
   id: message._id,
   role: message.role,
   content: message.content,
+  routingSource: message.routingSource || '',
+  routingConfidence:
+    typeof message.routingConfidence === 'number'
+      ? message.routingConfidence
+      : null,
+  matchedPlaybookId: message.matchedPlaybookId || '',
+  routingReason: message.routingReason || '',
   createdAt: message.createdAt
 });
 
@@ -223,6 +234,27 @@ const setSseHeaders = (res) => {
 const userSafeStreamError = () =>
   'Unable to deliver this message right now. Please try again.';
 
+const buildRoutedAiQuery = (chat, routingDecision) => {
+  const playbookContext = buildPlaybookAiContext(routingDecision);
+  return [playbookContext, chat.aiQuery].filter(Boolean).join('\n\n');
+};
+
+const routingMetadata = (routingDecision) =>
+  routingDecision?.metadata || {
+    routingSource: ROUTING_SOURCES.OPENAI,
+    routingConfidence: 0,
+    matchedPlaybookId: '',
+    routingReason: 'OpenAI selected.'
+  };
+
+const buildAssistantMessage = ({ content, routingDecision }) => ({
+  _id: createId('msg'),
+  role: 'assistant',
+  content,
+  ...routingMetadata(routingDecision),
+  createdAt: new Date()
+});
+
 export const listConversations = catchAsync(async (req, res) => {
   const conversations = await Conversation.find({ userId: req.auth.user._id })
     .sort({ updatedAt: -1 })
@@ -260,20 +292,24 @@ export const getConversationById = catchAsync(async (req, res) => {
 export const sendChatMessage = catchAsync(async (req, res) => {
   const chat = await parseChatRequest(req);
 
-  // Emergency override: if a matching admin response exists, return it verbatim
-  // and skip the AI entirely (the AI/streaming costs/latency are bypassed).
-  const emergencyMatch = await matchEmergencyResponse({
+  const routingDecision = await routeEmergencyResponse({
     text: chat.message,
-    language: chat.requestedLanguage
+    language: chat.requestedLanguage,
+    emergencyType: chat.effectiveEmergencyType,
+    conversation: chat.conversation?.toObject()
   });
 
-  const aiResponse = emergencyMatch
-    ? { reply: emergencyMatch.responseTemplate, emergency: true }
+  const aiResponse = routingDecision.source === ROUTING_SOURCES.STORED
+    ? {
+        reply: routingDecision.matchedPlaybook.responseTemplate,
+        emergency: true
+      }
     : await requestAiReply({
         emergencyType: chat.effectiveEmergencyType,
         language: chat.requestedLanguage,
-        query: chat.aiQuery,
-        caller: req.auth.user
+        query: buildRoutedAiQuery(chat, routingDecision),
+        caller: req.auth.user,
+        fallbackReply: routingDecision.matchedPlaybook?.responseTemplate || ''
       });
 
   const conversation = ensureConversationForMessage({
@@ -292,12 +328,10 @@ export const sendChatMessage = catchAsync(async (req, res) => {
     createdAt: new Date()
   };
 
-  const assistantMessage = {
-    _id: createId('msg'),
-    role: 'assistant',
+  const assistantMessage = buildAssistantMessage({
     content: aiResponse.reply,
-    createdAt: new Date()
-  };
+    routingDecision
+  });
 
   conversation.messages.push(userMessage, assistantMessage);
   await conversation.save();
@@ -311,7 +345,8 @@ export const sendChatMessage = catchAsync(async (req, res) => {
       assistantMessage: serializeMessage(assistantMessage),
       aiSource: getAiServiceInfo(),
       degraded: Boolean(aiResponse?.degraded),
-      emergencyOverride: Boolean(aiResponse?.emergency)
+      emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
+      ...routingMetadata(routingDecision)
     }
   });
 });
@@ -339,12 +374,13 @@ export const sendChatMessageStream = async (req, res, next) => {
       createdAt: new Date()
     };
 
-    // Emergency override: resolve BEFORE opening the OpenAI stream so a matched
-    // admin response is delivered through the same SSE delta/done events.
-    const emergencyMatch = await matchEmergencyResponse({
+    const routingDecision = await routeEmergencyResponse({
       text: chat.message,
-      language: chat.requestedLanguage
+      language: chat.requestedLanguage,
+      emergencyType: chat.effectiveEmergencyType,
+      conversation: chat.conversation?.toObject()
     });
+    const routeMeta = routingMetadata(routingDecision);
 
     setSseHeaders(res);
     writeSseEvent(res, 'meta', {
@@ -353,34 +389,36 @@ export const sendChatMessageStream = async (req, res, next) => {
       language: conversation.language || 'en',
       userMessage: serializeMessage(userMessage),
       aiSource: getAiServiceInfo(),
-      emergencyOverride: Boolean(emergencyMatch)
+      emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
+      ...routeMeta
     });
 
     let aiResponse;
-    if (emergencyMatch) {
+    if (routingDecision.source === ROUTING_SOURCES.STORED) {
       aiResponse = {
-        reply: emergencyMatch.responseTemplate,
+        reply: routingDecision.matchedPlaybook.responseTemplate,
         emergency: true
       };
-      writeSseEvent(res, 'delta', { text: emergencyMatch.responseTemplate });
+      writeSseEvent(res, 'delta', {
+        text: routingDecision.matchedPlaybook.responseTemplate
+      });
     } else {
       aiResponse = await requestAiReplyStream({
         emergencyType: chat.effectiveEmergencyType,
         language: chat.requestedLanguage,
-        query: chat.aiQuery,
+        query: buildRoutedAiQuery(chat, routingDecision),
         caller: req.auth.user,
+        fallbackReply: routingDecision.matchedPlaybook?.responseTemplate || '',
         onDelta: async (delta) => {
           writeSseEvent(res, 'delta', { text: delta });
         }
       });
     }
 
-    const assistantMessage = {
-      _id: createId('msg'),
-      role: 'assistant',
+    const assistantMessage = buildAssistantMessage({
       content: aiResponse.reply,
-      createdAt: new Date()
-    };
+      routingDecision
+    });
 
     conversation.messages.push(userMessage, assistantMessage);
     await conversation.save();
@@ -393,7 +431,8 @@ export const sendChatMessageStream = async (req, res, next) => {
       assistantMessage: serializeMessage(assistantMessage),
       aiSource: getAiServiceInfo(),
       degraded: Boolean(aiResponse?.degraded),
-      emergencyOverride: Boolean(aiResponse?.emergency)
+      emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
+      ...routeMeta
     });
     res.end();
   } catch (error) {

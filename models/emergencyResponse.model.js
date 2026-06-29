@@ -22,6 +22,39 @@ const emergencyResponseSchema = new mongoose.Schema(
       type: [String],
       default: []
     },
+    intentKey: {
+      type: String,
+      default: '',
+      trim: true
+    },
+    matchPhrases: {
+      type: [String],
+      default: []
+    },
+    negativeKeywords: {
+      type: [String],
+      default: []
+    },
+    severity: {
+      type: String,
+      enum: ['low', 'medium', 'high', 'critical'],
+      default: 'medium'
+    },
+    responseMode: {
+      type: String,
+      enum: ['stored_high_confidence', 'ai_with_context', 'ai_only'],
+      default: 'stored_high_confidence'
+    },
+    followUpPolicy: {
+      type: String,
+      enum: ['ai_when_needed', 'always_ai', 'stored_only'],
+      default: 'ai_when_needed'
+    },
+    aiContext: {
+      type: String,
+      default: '',
+      trim: true
+    },
     // The canned answer returned instead of calling the AI.
     responseTemplate: {
       type: String,
@@ -54,6 +87,7 @@ const emergencyResponseSchema = new mongoose.Schema(
 
 emergencyResponseSchema.index({ category: 1, active: 1 });
 emergencyResponseSchema.index({ language: 1, active: 1 });
+emergencyResponseSchema.index({ language: 1, intentKey: 1, active: 1 });
 
 const EmergencyResponse =
   mongoose.models.EmergencyResponse ||

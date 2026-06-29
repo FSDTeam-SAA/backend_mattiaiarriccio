@@ -4,6 +4,7 @@ import {
   listEmergencyResponses,
   listAdminEmergencyResponses,
   createEmergencyResponse,
+  previewEmergencyRoute,
   updateEmergencyResponse,
   deleteEmergencyResponse
 } from '../controllers/emergencyResponse.controller.js';
@@ -17,6 +18,7 @@ userRouter.get('/', listEmergencyResponses);
 export const adminEmergencyRouter = Router();
 adminEmergencyRouter.use(requireAuth('admin'));
 adminEmergencyRouter.get('/', listAdminEmergencyResponses);
+adminEmergencyRouter.post('/preview-route', previewEmergencyRoute);
 adminEmergencyRouter.post('/', createEmergencyResponse);
 adminEmergencyRouter.patch('/:emergencyResponseId', updateEmergencyResponse);
 adminEmergencyRouter.delete('/:emergencyResponseId', deleteEmergencyResponse);

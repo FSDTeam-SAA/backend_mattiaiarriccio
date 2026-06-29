@@ -16,6 +16,22 @@ const conversationMessageSchema = new mongoose.Schema(
       type: String,
       required: true
     },
+    routingSource: {
+      type: String,
+      default: ''
+    },
+    routingConfidence: {
+      type: Number,
+      default: null
+    },
+    matchedPlaybookId: {
+      type: String,
+      default: ''
+    },
+    routingReason: {
+      type: String,
+      default: ''
+    },
     createdAt: {
       type: Date,
       default: Date.now
