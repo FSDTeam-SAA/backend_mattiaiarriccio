@@ -12,6 +12,7 @@ import {
   resolveRequestLanguage
 } from '../services/language.service.js';
 import { isPremiumUser } from '../services/premium.service.js';
+import { getSetting } from '../services/settings.service.js';
 import { paginate, parsePagination, sendSuccess } from '../utils/response.js';
 
 const mapSafetyTipCard = (tip, categoryMap, language, { locked = false } = {}) => {
@@ -35,8 +36,13 @@ const mapSafetyTipCard = (tip, categoryMap, language, { locked = false } = {}) =
   };
 };
 
-const isSafetyTipLockedForUser = (tip, user) =>
-  Boolean(tip?.premiumOnly) && !isPremiumUser(user);
+const shouldLockPremiumGuides = async () => {
+  const accessRules = await getSetting('accessRules');
+  return accessRules?.premiumGuidesLocked !== false;
+};
+
+const isSafetyTipLockedForUser = (tip, user, lockPremiumGuides = true) =>
+  lockPremiumGuides && Boolean(tip?.premiumOnly) && !isPremiumUser(user);
 
 const languageQueryFor = (language) =>
   language === 'en'
@@ -62,7 +68,7 @@ export const listSafetyTips = catchAsync(async (req, res) => {
   const featuredOnly = String(req.query.featured || '').trim().toLowerCase() === 'true';
   const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
 
-  const [allTips, categoryMap, managedCategoryNames] = await Promise.all([
+  const [allTips, categoryMap, managedCategoryNames, lockPremiumGuides] = await Promise.all([
     SafetyTip.find({
       status: 'published',
       ...languageQueryFor(language)
@@ -70,7 +76,8 @@ export const listSafetyTips = catchAsync(async (req, res) => {
       .sort({ updatedAt: -1 })
       .lean(),
     getManagedCategoryMap(),
-    getManagedCategoryNames(language)
+    getManagedCategoryNames(language),
+    shouldLockPremiumGuides()
   ]);
 
   let tips = allTips;
@@ -105,7 +112,7 @@ export const listSafetyTips = catchAsync(async (req, res) => {
   const paged = paginate(
     tips.map((tip) =>
       mapSafetyTipCard(tip, categoryMap, language, {
-        locked: isSafetyTipLockedForUser(tip, user)
+        locked: isSafetyTipLockedForUser(tip, user, lockPremiumGuides)
       })
     ),
     page,
@@ -136,7 +143,9 @@ export const getSafetyTipById = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Safety tip not found');
   }
 
-  if (isSafetyTipLockedForUser(tip, req.auth.user)) {
+  const lockPremiumGuides = await shouldLockPremiumGuides();
+
+  if (isSafetyTipLockedForUser(tip, req.auth.user, lockPremiumGuides)) {
     const err = new ApiError(
       StatusCodes.FORBIDDEN,
       'This guide is available to premium members only'
@@ -185,7 +194,7 @@ export const getSafetyTipById = catchAsync(async (req, res) => {
       updatedAt: tip.updatedAt,
       relatedTips: relatedTips.map((related) =>
         mapSafetyTipCard(related, categoryMap, language, {
-          locked: isSafetyTipLockedForUser(related, user)
+          locked: isSafetyTipLockedForUser(related, user, lockPremiumGuides)
         })
       )
     }

@@ -37,24 +37,50 @@ import {
   parseIntegerInput
 } from '../utils/requestParsers.js';
 
+const parseOptionalDate = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const normalizeNotificationPreferences = (value = {}) => ({
+  push: value.push === undefined ? true : Boolean(value.push),
+  email: value.email === undefined ? false : Boolean(value.email)
+});
+
+const mapItemDetails = (item = {}) => ({
+  description: String(item.description || '').trim(),
+  imageUrl: String(item.imageUrl || item.itemImageUrl || '').trim(),
+  expirationDate: parseOptionalDate(item.expirationDate),
+  inspectionDate: parseOptionalDate(item.inspectionDate),
+  reminderEnabled: Boolean(item.reminderEnabled),
+  reminderDaysBefore:
+    Number.isFinite(Number(item.reminderDaysBefore)) && Number(item.reminderDaysBefore) >= 0
+      ? Math.round(Number(item.reminderDaysBefore))
+      : 7,
+  notificationPreferences: normalizeNotificationPreferences(item.notificationPreferences || {})
+});
+
 const normalizeItems = (items = []) =>
   items
     .map((item, index) => {
       if (typeof item === 'string') {
         return {
-          _id: createId('item'),
-          text: item.trim(),
-          order: index + 1,
-          icon: ''
-        };
-      }
-
-      return {
-        _id: item._id || item.id || createId('item'),
-        text: String(item.text || '').trim(),
-        order: Number.isFinite(item.order) ? item.order : index + 1,
-        icon: String(item.icon || '').trim()
+        _id: createId('item'),
+        text: item.trim(),
+        order: index + 1,
+        icon: '',
+        ...mapItemDetails()
       };
+    }
+
+    return {
+      _id: item._id || item.id || createId('item'),
+      text: String(item.text || '').trim(),
+      order: Number.isFinite(item.order) ? item.order : index + 1,
+      icon: String(item.icon || '').trim(),
+      ...mapItemDetails(item)
+    };
     })
     .filter((item) => item.text);
 
@@ -104,7 +130,18 @@ const mapChecklistPayload = (checklist, categoryMap) => {
       id: item._id,
       text: item.text,
       order: item.order,
-      icon: item.icon || ''
+      icon: item.icon || '',
+      description: item.description || '',
+      imageUrl: item.imageUrl || '',
+      expirationDate: item.expirationDate || null,
+      inspectionDate: item.inspectionDate || null,
+      reminderEnabled: Boolean(item.reminderEnabled),
+      reminderDaysBefore: Number.isFinite(item.reminderDaysBefore)
+        ? item.reminderDaysBefore
+        : 7,
+      notificationPreferences: normalizeNotificationPreferences(
+        item.notificationPreferences || {}
+      )
     })),
     createdAt: checklist.createdAt,
     updatedAt: checklist.updatedAt
@@ -337,7 +374,11 @@ export const patchAiPromptConfig = catchAsync(async (req, res) => {
     fallbackMessage:
       req.body.fallbackMessage !== undefined
         ? req.body.fallbackMessage
-        : req.body.fallback_message
+        : req.body.fallback_message,
+    suggestedQuestions:
+      req.body.suggestedQuestions !== undefined
+        ? req.body.suggestedQuestions
+        : req.body.suggested_questions
   });
 
   await logActivity({

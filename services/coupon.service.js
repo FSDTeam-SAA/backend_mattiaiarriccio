@@ -150,9 +150,8 @@ export const redeemCoupon = async ({ userId, code }) => {
     durationDays = DEFAULT_TRIAL_DAYS;
   }
 
-  await grantManual(userId, { durationDays, source: 'coupon' });
-
-  const user = await User.findById(userId).lean();
+  const grantedUser = await grantManual(userId, { durationDays, source: 'coupon' });
+  const user = grantedUser?.toObject ? grantedUser.toObject() : grantedUser || await User.findById(userId).lean();
 
   return {
     coupon: incremented.toObject ? incremented.toObject() : incremented,

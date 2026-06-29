@@ -17,26 +17,53 @@ import {
 } from '../services/language.service.js';
 import { resolveImageUrl } from '../services/media.service.js';
 import { isPremiumUser } from '../services/premium.service.js';
+import { getSetting } from '../services/settings.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { parseArrayInput } from '../utils/requestParsers.js';
+
+const parseOptionalDate = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const normalizeNotificationPreferences = (value = {}) => ({
+  push: value.push === undefined ? true : Boolean(value.push),
+  email: value.email === undefined ? false : Boolean(value.email)
+});
+
+const mapItemDetails = (item = {}) => ({
+  description: String(item.description || '').trim(),
+  imageUrl: String(item.imageUrl || item.itemImageUrl || '').trim(),
+  expirationDate: parseOptionalDate(item.expirationDate),
+  inspectionDate: parseOptionalDate(item.inspectionDate),
+  reminderEnabled: Boolean(item.reminderEnabled),
+  reminderDaysBefore:
+    Number.isFinite(Number(item.reminderDaysBefore)) && Number(item.reminderDaysBefore) >= 0
+      ? Math.round(Number(item.reminderDaysBefore))
+      : 7,
+  notificationPreferences: normalizeNotificationPreferences(item.notificationPreferences || {})
+});
 
 const normalizeItems = (items = []) =>
   items
     .map((item, index) => {
       if (typeof item === 'string') {
         return {
-          _id: createId('item'),
-          text: item.trim(),
-          order: index + 1,
-          icon: ''
-        };
-      }
+        _id: createId('item'),
+        text: item.trim(),
+        order: index + 1,
+        icon: '',
+        ...mapItemDetails()
+      };
+    }
 
       return {
         _id: item._id || item.id || createId('item'),
         text: String(item.text || '').trim(),
         order: Number.isFinite(item.order) ? item.order : index + 1,
-        icon: String(item.icon || '').trim()
+        icon: String(item.icon || '').trim(),
+        ...mapItemDetails(item)
       };
     })
     .filter((item) => item.text);
@@ -75,7 +102,8 @@ const cloneChecklistItems = (items = []) =>
     _id: item._id || item.id || createId('item'),
     text: String(item.text || '').trim(),
     order: Number.isFinite(item.order) ? item.order : index + 1,
-    icon: String(item.icon || '').trim()
+    icon: String(item.icon || '').trim(),
+    ...mapItemDetails(item)
   }));
 
 const createPersonalizedChecklistFromTemplate = async ({
@@ -192,6 +220,17 @@ const formatChecklist = (checklist, progress, categoryMap, language = 'en') => {
       text: item.text,
       order: item.order,
       icon: item.icon || '',
+      description: item.description || '',
+      imageUrl: item.imageUrl || '',
+      expirationDate: item.expirationDate || null,
+      inspectionDate: item.inspectionDate || null,
+      reminderEnabled: Boolean(item.reminderEnabled),
+      reminderDaysBefore: Number.isFinite(item.reminderDaysBefore)
+        ? item.reminderDaysBefore
+        : 7,
+      notificationPreferences: normalizeNotificationPreferences(
+        item.notificationPreferences || {}
+      ),
       completed: completedItemIds.has(item._id)
     }));
   const completedCount = items.filter((item) => item.completed).length;
@@ -215,6 +254,7 @@ const formatChecklist = (checklist, progress, categoryMap, language = 'en') => {
     icon: checklist.icon || '',
     coverImageUrl: checklist.coverImageUrl,
     status: checklist.status,
+    premiumOnly: Boolean(checklist.premiumOnly),
     createdBy: checklist.createdBy,
     createdAt: checklist.createdAt,
     updatedAt: checklist.updatedAt,
@@ -258,8 +298,13 @@ const formatLockedChecklist = (checklist, categoryMap, language = 'en') => {
   };
 };
 
-const isChecklistLockedForUser = (checklist, user) =>
-  Boolean(checklist?.premiumOnly) && !isPremiumUser(user);
+const shouldLockPremiumChecklists = async () => {
+  const accessRules = await getSetting('accessRules');
+  return accessRules?.premiumChecklistsLocked !== false;
+};
+
+const isChecklistLockedForUser = (checklist, user, lockPremiumChecklists = true) =>
+  lockPremiumChecklists && Boolean(checklist?.premiumOnly) && !isPremiumUser(user);
 
 const getOrCreateChecklistProgress = async (userId, checklistId) => {
   let progress = await ChecklistProgress.findOne({ userId, checklistId });
@@ -282,7 +327,13 @@ export const listChecklists = catchAsync(async (req, res) => {
   const userId = req.auth.user._id;
   const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
 
-  const [fetchedChecklists, progressEntries, categoryMap, managedCategoryNames] =
+  const [
+    fetchedChecklists,
+    progressEntries,
+    categoryMap,
+    managedCategoryNames,
+    lockPremiumChecklists
+  ] =
     await Promise.all([
       Checklist.find({
         $and: [
@@ -299,7 +350,8 @@ export const listChecklists = catchAsync(async (req, res) => {
         .lean(),
       ChecklistProgress.find({ userId }).lean(),
       getManagedCategoryMap(),
-      getManagedCategoryNames(language)
+      getManagedCategoryNames(language),
+      shouldLockPremiumChecklists()
     ]);
   const progressMap = new Map(progressEntries.map((entry) => [entry.checklistId, entry]));
   const personalizedTemplateIds = new Set(
@@ -340,7 +392,7 @@ export const listChecklists = catchAsync(async (req, res) => {
   sendSuccess(res, {
     message: 'Checklists fetched successfully',
     data: checklists.map((checklist) =>
-      isChecklistLockedForUser(checklist, user)
+      isChecklistLockedForUser(checklist, user, lockPremiumChecklists)
         ? formatLockedChecklist(checklist, categoryMap, language)
         : formatChecklist(checklist, progressMap.get(checklist._id), categoryMap, language)
     ),
@@ -365,7 +417,7 @@ export const getChecklistById = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist not found');
   }
 
-  if (isChecklistLockedForUser(checklist, req.auth.user)) {
+  if (isChecklistLockedForUser(checklist, req.auth.user, await shouldLockPremiumChecklists())) {
     const err = new ApiError(
       StatusCodes.FORBIDDEN,
       'This checklist is available to premium members only'
@@ -582,7 +634,8 @@ export const addChecklistItem = catchAsync(async (req, res) => {
     _id: createId('item'),
     text,
     order: checklist.items.length + 1,
-    icon: String(req.body.icon || req.body.iconEmoji || '').trim()
+    icon: String(req.body.icon || req.body.iconEmoji || '').trim(),
+    ...mapItemDetails(req.body)
   });
   await checklist.save();
 
@@ -666,6 +719,37 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
     ).trim();
   }
 
+  const detailFields = [
+    'description',
+    'imageUrl',
+    'itemImageUrl',
+    'expirationDate',
+    'inspectionDate',
+    'reminderEnabled',
+    'reminderDaysBefore',
+    'notificationPreferences'
+  ];
+  if (detailFields.some((field) => req.body[field] !== undefined)) {
+    if (!userCanEditChecklist(checklist, userId)) {
+      checklist = await resolveChecklistForEdit({
+        checklistId: checklist._id,
+        userId
+      });
+      item = checklist.items.find((entry) => entry._id === req.params.itemId);
+      if (!item) {
+        throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist item not found');
+      }
+    }
+    const details = mapItemDetails({ ...item.toObject?.(), ...req.body });
+    item.description = details.description;
+    item.imageUrl = details.imageUrl;
+    item.expirationDate = details.expirationDate;
+    item.inspectionDate = details.inspectionDate;
+    item.reminderEnabled = details.reminderEnabled;
+    item.reminderDaysBefore = details.reminderDaysBefore;
+    item.notificationPreferences = details.notificationPreferences;
+  }
+
   if (!progress) {
     progress = await getOrCreateChecklistProgress(userId, checklist._id);
   }
@@ -714,7 +798,8 @@ export const deleteChecklistItem = catchAsync(async (req, res) => {
       _id: entry._id,
       text: entry.text,
       order: index + 1,
-      icon: entry.icon || ''
+      icon: entry.icon || '',
+      ...mapItemDetails(entry)
     }));
   await checklist.save();
 

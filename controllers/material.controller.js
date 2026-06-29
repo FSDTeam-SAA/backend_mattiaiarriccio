@@ -13,6 +13,8 @@ import {
   syncForMaterial,
   cancelForMaterial
 } from '../services/reminder.service.js';
+import { isPremiumUser } from '../services/premium.service.js';
+import { getSetting } from '../services/settings.service.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -119,6 +121,20 @@ export const createMaterial = catchAsync(async (req, res) => {
 
   if (!name) {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'name is required');
+  }
+
+  const accessRules = await getSetting('accessRules');
+  const maxFreeMaterials = Number(accessRules?.maxFreeMaterials ?? 0);
+  if (!isPremiumUser(req.auth.user) && maxFreeMaterials > 0) {
+    const existingCount = await Material.countDocuments({ userId });
+    if (existingCount >= maxFreeMaterials) {
+      const err = new ApiError(
+        StatusCodes.FORBIDDEN,
+        'Upgrade to premium to track more materials'
+      );
+      err.code = 'PREMIUM_REQUIRED';
+      throw err;
+    }
   }
 
   const imageUrl = await resolveImageUrl({

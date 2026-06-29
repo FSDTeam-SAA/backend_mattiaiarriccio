@@ -20,6 +20,42 @@ const checklistItemSchema = new mongoose.Schema(
       type: String,
       default: '',
       trim: true
+    },
+    description: {
+      type: String,
+      default: '',
+      trim: true
+    },
+    imageUrl: {
+      type: String,
+      default: '',
+      trim: true
+    },
+    expirationDate: {
+      type: Date,
+      default: null
+    },
+    inspectionDate: {
+      type: Date,
+      default: null
+    },
+    reminderEnabled: {
+      type: Boolean,
+      default: false
+    },
+    reminderDaysBefore: {
+      type: Number,
+      default: 7
+    },
+    notificationPreferences: {
+      push: {
+        type: Boolean,
+        default: true
+      },
+      email: {
+        type: Boolean,
+        default: false
+      }
     }
   },
   {

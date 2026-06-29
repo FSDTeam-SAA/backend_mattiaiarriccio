@@ -6,6 +6,7 @@ import {
   defaultWelcomeFor,
   defaultSystemInstructionFor,
   defaultFallbackFor,
+  defaultSuggestedQuestionsFor,
   buildSystemMessage,
   buildOfflineEmergencyGuide,
   languageInstructionFor,
@@ -71,7 +72,11 @@ const readPromptConfig = async (language) => {
     systemInstruction:
       (doc && doc.system_instruction) || defaultSystemInstructionFor(lang),
     fallbackMessage:
-      (doc && doc.fallback_message) || defaultFallbackFor(lang)
+      (doc && doc.fallback_message) || defaultFallbackFor(lang),
+    suggestedQuestions:
+      Array.isArray(doc?.suggested_questions) && doc.suggested_questions.length > 0
+        ? doc.suggested_questions.map((item) => String(item)).filter(Boolean)
+        : defaultSuggestedQuestionsFor(lang)
   };
   promptConfigCache.set(lang, { value, expiry: now + PROMPT_CONFIG_TTL_MS });
 
@@ -349,10 +354,12 @@ export const fetchAiPrompt = async (language = 'en') => {
     welcomeMessage: config.welcomeInstruction,
     systemInstruction: config.systemInstruction,
     fallbackMessage: config.fallbackMessage,
+    suggestedQuestions: config.suggestedQuestions,
     raw: {
       welcome_instruction: config.welcomeInstruction,
       system_instruction: config.systemInstruction,
-      fallback_message: config.fallbackMessage
+      fallback_message: config.fallbackMessage,
+      suggested_questions: config.suggestedQuestions
     }
   };
 };
@@ -366,7 +373,8 @@ export const updateAiPrompt = async ({
   language = 'en',
   welcomeMessage,
   systemInstruction,
-  fallbackMessage
+  fallbackMessage,
+  suggestedQuestions
 }) => {
   const lang = normalizeLanguage(language);
   const update = { updated_at: new Date() };
@@ -379,6 +387,11 @@ export const updateAiPrompt = async ({
   }
   if (fallbackMessage !== undefined) {
     update.fallback_message = fallbackMessage;
+  }
+  if (suggestedQuestions !== undefined) {
+    update.suggested_questions = Array.isArray(suggestedQuestions)
+      ? suggestedQuestions.map((item) => String(item).trim()).filter(Boolean)
+      : [];
   }
 
   await PromptConfig.updateOne(

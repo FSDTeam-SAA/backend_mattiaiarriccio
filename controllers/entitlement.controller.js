@@ -1,6 +1,10 @@
 import catchAsync from '../utils/catchAsync.js';
 import { sendSuccess } from '../utils/response.js';
-import { entitlementSnapshot, isPremiumUser } from '../services/premium.service.js';
+import {
+  entitlementSnapshot,
+  isPremiumUser,
+  recomputeTier
+} from '../services/premium.service.js';
 import { getSetting } from '../services/settings.service.js';
 
 const todayStr = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -19,7 +23,7 @@ const todayStr = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC
  * }
  */
 export const getEntitlements = catchAsync(async (req, res) => {
-  const user = req.auth.user;
+  const user = (await recomputeTier(req.auth.user._id)) || req.auth.user;
   const snapshot = entitlementSnapshot(user);
   const premium = isPremiumUser(user);
 

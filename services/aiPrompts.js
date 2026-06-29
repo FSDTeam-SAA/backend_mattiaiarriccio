@@ -81,6 +81,17 @@ export const DEFAULT_FALLBACK_RESPONSES = {
     'Descrivi un incendio, un terremoto, un blackout, un primo soccorso, un\'alluvione o una fuga di gas.'
 };
 
+export const DEFAULT_SUGGESTED_QUESTIONS = {
+  en: [
+    'What should I put in a 72h kit?',
+    'How do I prepare my home for emergencies?'
+  ],
+  it: [
+    'Cosa devo mettere in un kit 72h?',
+    'Come preparo la casa per le emergenze?'
+  ]
+};
+
 const pickByLanguage = (map, language) => {
   const lang = normalizeLanguage(language);
   return map[lang] || map.en;
@@ -94,6 +105,9 @@ export const defaultSystemInstructionFor = (language) =>
 
 export const defaultFallbackFor = (language) =>
   pickByLanguage(DEFAULT_FALLBACK_RESPONSES, language);
+
+export const defaultSuggestedQuestionsFor = (language) =>
+  pickByLanguage(DEFAULT_SUGGESTED_QUESTIONS, language);
 
 export const DEFAULT_WELCOME_MESSAGE = DEFAULT_WELCOME_MESSAGES.en;
 export const DEFAULT_SYSTEM_INSTRUCTION = DEFAULT_SYSTEM_INSTRUCTIONS.en;

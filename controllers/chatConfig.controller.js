@@ -9,6 +9,9 @@ export const getChatConfig = catchAsync(async (req, res) => {
 
   sendSuccess(res, {
     message: 'Chat config fetched successfully',
-    data: { welcomeMessage: prompt.welcomeMessage || '' }
+    data: {
+      welcomeMessage: prompt.welcomeMessage || '',
+      suggestedQuestions: prompt.suggestedQuestions || []
+    }
   });
 });

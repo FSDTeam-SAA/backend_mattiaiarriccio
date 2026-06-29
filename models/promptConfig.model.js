@@ -6,7 +6,8 @@ const PROMPT_CONFIG_UNIQUE_INDEX = 'type_1_language_1';
 const PROMPT_TEXT_FIELDS = [
   'welcome_instruction',
   'system_instruction',
-  'fallback_message'
+  'fallback_message',
+  'suggested_questions'
 ];
 
 const promptConfigSchema = new mongoose.Schema(
@@ -25,6 +26,7 @@ const promptConfigSchema = new mongoose.Schema(
     welcome_instruction: { type: String, default: '' },
     system_instruction: { type: String, default: '' },
     fallback_message: { type: String, default: '' },
+    suggested_questions: { type: [String], default: [] },
     updated_at: { type: Date, default: Date.now }
   },
   {
