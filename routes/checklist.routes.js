@@ -22,6 +22,15 @@ const checklistMediaUpload = upload.fields([
   { name: 'coverImageUrl', maxCount: 1 }
 ]);
 
+// Per-item image upload. Multer passes non-multipart requests (e.g. the JSON
+// toggle-completion call) straight through, so this is safe on the shared route.
+const checklistItemMediaUpload = upload.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'itemImage', maxCount: 1 },
+  { name: 'itemImageFile', maxCount: 1 },
+  { name: 'imageUrl', maxCount: 1 }
+]);
+
 router.use(requireAuth('user'));
 
 router.get('/', listChecklists);
@@ -30,7 +39,7 @@ router.get('/:checklistId', getChecklistById);
 router.patch('/:checklistId', checklistMediaUpload, updateChecklist);
 router.delete('/:checklistId', deleteChecklist);
 router.post('/:checklistId/items', addChecklistItem);
-router.patch('/:checklistId/items/:itemId', updateChecklistItem);
+router.patch('/:checklistId/items/:itemId', checklistItemMediaUpload, updateChecklistItem);
 router.delete('/:checklistId/items/:itemId', deleteChecklistItem);
 
 export default router;

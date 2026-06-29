@@ -15,7 +15,7 @@ import {
   normalizeLanguageCode,
   resolveRequestLanguage
 } from '../services/language.service.js';
-import { resolveImageUrl } from '../services/media.service.js';
+import { getUploadedFile, resolveImageUrl } from '../services/media.service.js';
 import { isPremiumUser } from '../services/premium.service.js';
 import { getSetting } from '../services/settings.service.js';
 import { sendSuccess } from '../utils/response.js';
@@ -27,17 +27,48 @@ const parseOptionalDate = (value) => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
-const normalizeNotificationPreferences = (value = {}) => ({
-  push: value.push === undefined ? true : Boolean(value.push),
-  email: value.email === undefined ? false : Boolean(value.email)
-});
+// Multipart/form-data sends every field as a string, so "false" arrives as a
+// truthy string. Parse booleans defensively to support both JSON and form data.
+const parseBoolean = (value, fallback = false) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'off', ''].includes(normalized)) return false;
+  }
+  return fallback;
+};
+
+// notificationPreferences may arrive as an object (JSON body) or a JSON-encoded
+// string (multipart field). Normalize both into a plain object.
+const parseMaybeJson = (value) => {
+  if (value && typeof value === 'object') return value;
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+};
+
+const normalizeNotificationPreferences = (value = {}) => {
+  const prefs = parseMaybeJson(value);
+  return {
+    push: prefs.push === undefined ? true : parseBoolean(prefs.push, true),
+    email: prefs.email === undefined ? false : parseBoolean(prefs.email, false)
+  };
+};
 
 const mapItemDetails = (item = {}) => ({
   description: String(item.description || '').trim(),
   imageUrl: String(item.imageUrl || item.itemImageUrl || '').trim(),
   expirationDate: parseOptionalDate(item.expirationDate),
   inspectionDate: parseOptionalDate(item.inspectionDate),
-  reminderEnabled: Boolean(item.reminderEnabled),
+  reminderEnabled: parseBoolean(item.reminderEnabled, false),
   reminderDaysBefore:
     Number.isFinite(Number(item.reminderDaysBefore)) && Number(item.reminderDaysBefore) >= 0
       ? Math.round(Number(item.reminderDaysBefore))
@@ -719,17 +750,20 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
     ).trim();
   }
 
+  const itemImageFieldNames = ['image', 'itemImage', 'itemImageFile', 'imageUrl'];
+  const hasItemImageUpload = Boolean(getUploadedFile(req, ...itemImageFieldNames));
   const detailFields = [
     'description',
     'imageUrl',
     'itemImageUrl',
+    'removeItemImage',
     'expirationDate',
     'inspectionDate',
     'reminderEnabled',
     'reminderDaysBefore',
     'notificationPreferences'
   ];
-  if (detailFields.some((field) => req.body[field] !== undefined)) {
+  if (hasItemImageUpload || detailFields.some((field) => req.body[field] !== undefined)) {
     if (!userCanEditChecklist(checklist, userId)) {
       checklist = await resolveChecklistForEdit({
         checklistId: checklist._id,
@@ -740,9 +774,19 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
         throw new ApiError(StatusCodes.NOT_FOUND, 'Checklist item not found');
       }
     }
+    // Resolve the item image: a newly uploaded file is sent to Cloudinary, a
+    // `removeItemImage` signal clears it, otherwise the existing URL is kept.
+    const resolvedItemImageUrl = await resolveImageUrl({
+      req,
+      folder: 'checklists/items',
+      fieldNames: itemImageFieldNames,
+      bodyValue: req.body.imageUrl !== undefined ? req.body.imageUrl : req.body.itemImageUrl,
+      currentValue: item.imageUrl || '',
+      removeKey: 'removeItemImage'
+    });
     const details = mapItemDetails({ ...item.toObject?.(), ...req.body });
     item.description = details.description;
-    item.imageUrl = details.imageUrl;
+    item.imageUrl = resolvedItemImageUrl;
     item.expirationDate = details.expirationDate;
     item.inspectionDate = details.inspectionDate;
     item.reminderEnabled = details.reminderEnabled;
