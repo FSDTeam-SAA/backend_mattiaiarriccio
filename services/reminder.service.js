@@ -1,7 +1,9 @@
 import NotificationJob from '../models/notificationJob.model.js';
+import User from '../models/user.model.js';
 import { createId } from '../lib/id.js';
 import { getSetting } from './settings.service.js';
 import { sendToUser } from './push.service.js';
+import { sendReminderEmail } from './email.service.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -11,6 +13,8 @@ const subtractDays = (date, days) => {
 };
 
 const isFutureOrNow = (date) => date instanceof Date && date.getTime() > Date.now();
+
+const formatDay = (date) => new Date(date).toISOString().slice(0, 10);
 
 /**
  * Rebuild all pending NotificationJobs for a material from its current
@@ -116,6 +120,118 @@ export const cancelForMaterial = async (materialId) => {
   return { deletedCount: result.deletedCount || 0 };
 };
 
+// ---------------------------------------------------------------------------
+// Checklist item reminders
+// ---------------------------------------------------------------------------
+//
+// A checklist item carries: { reminderEnabled, reminderDaysBefore,
+// expirationDate, notificationPreferences:{ push, email }, completed }.
+// We schedule one job per enabled channel, fired `reminderDaysBefore` days
+// before the item's expiration date. Completed items never get reminders.
+// Jobs are keyed by refId = item._id so a re-sync cleanly replaces them.
+
+const checklistItemReminderJobs = ({ userId, checklistId, item, completed }) => {
+  const jobs = [];
+
+  if (completed) return jobs;
+  if (!item || item.reminderEnabled !== true) return jobs;
+  if (!item.expirationDate) return jobs;
+
+  const offsetDays = Number.isFinite(Number(item.reminderDaysBefore))
+    ? Math.max(0, Math.round(Number(item.reminderDaysBefore)))
+    : 0;
+  const scheduledAt = subtractDays(item.expirationDate, offsetDays);
+  if (!isFutureOrNow(scheduledAt)) return jobs;
+
+  const prefs = item.notificationPreferences || {};
+  const channels = [];
+  if (prefs.push) channels.push('push');
+  if (prefs.email) channels.push('email');
+  // If the user enabled a reminder but no channel, default to push so the
+  // reminder still surfaces on the device.
+  if (channels.length === 0) channels.push('push');
+
+  const title = 'Checklist reminder';
+  const body = `"${item.text}" is due on ${formatDay(item.expirationDate)}.`;
+
+  for (const channel of channels) {
+    jobs.push({
+      _id: createId('notifjob'),
+      userId,
+      type: 'checklist_item',
+      refId: item._id,
+      title,
+      body,
+      scheduledAt,
+      channel,
+      status: 'pending'
+    });
+  }
+
+  return jobs;
+};
+
+/**
+ * Rebuild pending reminder jobs for a single checklist item. Deletes the
+ * item's still-pending jobs, then recreates them from its current state.
+ */
+export const syncForChecklistItem = async ({ userId, checklistId, item, completed = false }) => {
+  if (!userId || !item?._id) return [];
+
+  await NotificationJob.deleteMany({
+    userId,
+    refId: item._id,
+    type: 'checklist_item',
+    status: 'pending'
+  });
+
+  const jobs = checklistItemReminderJobs({ userId, checklistId, item, completed });
+  if (jobs.length === 0) return [];
+  return NotificationJob.insertMany(jobs);
+};
+
+/**
+ * Re-sync reminders for every item in a checklist. `completedItemIds` is the
+ * set of item ids the user has already ticked off (no reminder for those).
+ */
+export const syncForChecklist = async ({ userId, checklist, completedItemIds = [] }) => {
+  if (!userId || !checklist?._id) return [];
+  const completedSet = new Set(completedItemIds);
+  const items = Array.isArray(checklist.items) ? checklist.items : [];
+
+  await cancelForChecklistItems(userId, items.map((it) => it._id));
+
+  const jobs = [];
+  for (const item of items) {
+    jobs.push(
+      ...checklistItemReminderJobs({
+        userId,
+        checklistId: checklist._id,
+        item,
+        completed: completedSet.has(item._id)
+      })
+    );
+  }
+
+  if (jobs.length === 0) return [];
+  return NotificationJob.insertMany(jobs);
+};
+
+/** Delete pending checklist-item jobs for the given item ids. */
+export const cancelForChecklistItems = async (userId, itemIds = []) => {
+  const ids = (itemIds || []).filter(Boolean);
+  if (!userId || ids.length === 0) return { deletedCount: 0 };
+
+  const result = await NotificationJob.deleteMany({
+    userId,
+    refId: { $in: ids },
+    type: 'checklist_item',
+    status: 'pending'
+  });
+
+  return { deletedCount: result.deletedCount || 0 };
+};
+
 /**
  * Deliver every due pending job. Called by the scheduler every couple of minutes.
  * - Skips entirely when notificationsEnabled is false.
@@ -179,6 +295,31 @@ export const dispatchDueJobs = async () => {
             { _id: claimed._id },
             { $set: { error: `push skipped: ${result.reason || 'unknown'}` } }
           );
+        }
+      } else if (claimed.channel === 'email') {
+        const user = await User.findById(claimed.userId)
+          .select('email fullName notificationsEnabled')
+          .lean();
+
+        // Respect a per-user opt-out without failing the job.
+        if (user && user.notificationsEnabled === false) {
+          await NotificationJob.updateOne(
+            { _id: claimed._id },
+            { $set: { error: 'email skipped: user opted out' } }
+          );
+        } else {
+          const result = await sendReminderEmail({
+            toEmail: user?.email,
+            toName: user?.fullName,
+            title: claimed.title,
+            body: claimed.body
+          });
+          if (result?.skipped) {
+            await NotificationJob.updateOne(
+              { _id: claimed._id },
+              { $set: { error: `email skipped: ${result.reason || 'unknown'}` } }
+            );
+          }
         }
       }
       // channel 'local': nothing to deliver server-side; already marked sent.

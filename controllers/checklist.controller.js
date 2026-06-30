@@ -16,6 +16,11 @@ import {
   resolveRequestLanguage
 } from '../services/language.service.js';
 import { getUploadedFile, resolveImageUrl } from '../services/media.service.js';
+import {
+  syncForChecklist,
+  syncForChecklistItem,
+  cancelForChecklistItems
+} from '../services/reminder.service.js';
 import { isPremiumUser } from '../services/premium.service.js';
 import { getSetting } from '../services/settings.service.js';
 import { sendSuccess } from '../utils/response.js';
@@ -68,6 +73,10 @@ const mapItemDetails = (item = {}) => ({
   imageUrl: String(item.imageUrl || item.itemImageUrl || '').trim(),
   expirationDate: parseOptionalDate(item.expirationDate),
   inspectionDate: parseOptionalDate(item.inspectionDate),
+  inspectionIntervalMonths:
+    Number.isFinite(Number(item.inspectionIntervalMonths)) && Number(item.inspectionIntervalMonths) >= 1
+      ? Math.round(Number(item.inspectionIntervalMonths))
+      : null,
   reminderEnabled: parseBoolean(item.reminderEnabled, false),
   reminderDaysBefore:
     Number.isFinite(Number(item.reminderDaysBefore)) && Number(item.reminderDaysBefore) >= 0
@@ -255,6 +264,9 @@ const formatChecklist = (checklist, progress, categoryMap, language = 'en') => {
       imageUrl: item.imageUrl || '',
       expirationDate: item.expirationDate || null,
       inspectionDate: item.inspectionDate || null,
+      inspectionIntervalMonths: Number.isFinite(item.inspectionIntervalMonths)
+        ? item.inspectionIntervalMonths
+        : null,
       reminderEnabled: Boolean(item.reminderEnabled),
       reminderDaysBefore: Number.isFinite(item.reminderDaysBefore)
         ? item.reminderDaysBefore
@@ -595,6 +607,17 @@ export const updateChecklist = catchAsync(async (req, res) => {
     getManagedCategoryMap()
   ]);
 
+  // Items may have been replaced wholesale; rebuild all reminder jobs.
+  try {
+    await syncForChecklist({
+      userId: req.auth.user._id,
+      checklist: checklist.toObject(),
+      completedItemIds: progress?.completedItemIds || []
+    });
+  } catch (error) {
+    console.error('[checklist.controller] reminder sync failed:', error?.message || error);
+  }
+
   sendSuccess(res, {
     message: 'Checklist updated successfully',
     data: formatChecklist(checklist.toObject(), progress, categoryMap, language)
@@ -616,6 +639,16 @@ export const deleteChecklist = catchAsync(async (req, res) => {
 
     await Checklist.deleteOne({ _id: checklist._id });
     await ChecklistProgress.deleteMany({ checklistId: checklist._id });
+
+    // Drop any pending reminders for every item in the deleted checklist.
+    try {
+      await cancelForChecklistItems(
+        userId,
+        (checklist.items || []).map((entry) => entry._id)
+      );
+    } catch (error) {
+      console.error('[checklist.controller] reminder cancel failed:', error?.message || error);
+    }
 
     sendSuccess(res, {
       message: 'Checklist deleted successfully'
@@ -661,14 +694,29 @@ export const addChecklistItem = catchAsync(async (req, res) => {
     userId: req.auth.user._id
   });
 
+  const newItemId = createId('item');
   checklist.items.push({
-    _id: createId('item'),
+    _id: newItemId,
     text,
     order: checklist.items.length + 1,
     icon: String(req.body.icon || req.body.iconEmoji || '').trim(),
     ...mapItemDetails(req.body)
   });
   await checklist.save();
+
+  try {
+    const addedItem = checklist.items.find((entry) => entry._id === newItemId);
+    if (addedItem) {
+      await syncForChecklistItem({
+        userId: req.auth.user._id,
+        checklistId: checklist._id,
+        item: addedItem.toObject ? addedItem.toObject() : addedItem,
+        completed: false
+      });
+    }
+  } catch (error) {
+    console.error('[checklist.controller] reminder sync failed:', error?.message || error);
+  }
 
   const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
   const [progress, categoryMap] = await Promise.all([
@@ -759,6 +807,7 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
     'removeItemImage',
     'expirationDate',
     'inspectionDate',
+    'inspectionIntervalMonths',
     'reminderEnabled',
     'reminderDaysBefore',
     'notificationPreferences'
@@ -789,6 +838,7 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
     item.imageUrl = resolvedItemImageUrl;
     item.expirationDate = details.expirationDate;
     item.inspectionDate = details.inspectionDate;
+    item.inspectionIntervalMonths = details.inspectionIntervalMonths;
     item.reminderEnabled = details.reminderEnabled;
     item.reminderDaysBefore = details.reminderDaysBefore;
     item.notificationPreferences = details.notificationPreferences;
@@ -814,6 +864,22 @@ export const updateChecklistItem = catchAsync(async (req, res) => {
   }
 
   await checklist.save();
+
+  // Reschedule this item's reminder jobs from its current state (completed
+  // items get none). Best-effort: never let reminder syncing break the update.
+  try {
+    const refreshedItem = checklist.items.find((entry) => entry._id === req.params.itemId);
+    if (refreshedItem) {
+      await syncForChecklistItem({
+        userId,
+        checklistId: checklist._id,
+        item: refreshedItem.toObject ? refreshedItem.toObject() : refreshedItem,
+        completed: (progress.completedItemIds || []).includes(req.params.itemId)
+      });
+    }
+  } catch (error) {
+    console.error('[checklist.controller] reminder sync failed:', error?.message || error);
+  }
 
   const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
   const categoryMap = await getManagedCategoryMap();
@@ -857,6 +923,13 @@ export const deleteChecklistItem = catchAsync(async (req, res) => {
       (itemId) => itemId !== req.params.itemId
     );
     await progress.save();
+  }
+
+  // Drop any pending reminders for the removed item.
+  try {
+    await cancelForChecklistItems(req.auth.user._id, [req.params.itemId]);
+  } catch (error) {
+    console.error('[checklist.controller] reminder cancel failed:', error?.message || error);
   }
 
   const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);

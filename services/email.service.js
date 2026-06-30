@@ -48,6 +48,75 @@ const getTransporter = () => {
   return cachedTransporter;
 };
 
+export const isEmailConfigured = () => {
+  const { user, pass } = resolveSmtpConfig();
+  return Boolean(user && pass);
+};
+
+/**
+ * Generic reminder/notification email. Used by the notification dispatcher for
+ * `email`-channel jobs (e.g. checklist item reminders).
+ *
+ * Returns a summary and NEVER throws on send failure — the caller decides how
+ * to record the outcome, exactly like push.service.sendToUser. A missing SMTP
+ * configuration resolves to { skipped: true } rather than blowing up the loop.
+ */
+export const sendReminderEmail = async ({ toEmail, toName, title, body }) => {
+  const destination = String(toEmail || '').trim().toLowerCase();
+  if (!destination) {
+    return { skipped: true, reason: 'no_recipient' };
+  }
+  if (!isEmailConfigured()) {
+    return { skipped: true, reason: 'not_configured' };
+  }
+
+  const subject = String(title || 'Reminder').trim() || 'Reminder';
+  const greetingName = String(toName || '').trim();
+  const messageBody = String(body || '').trim();
+
+  const text = [
+    greetingName ? `Hi ${greetingName},` : 'Hi,',
+    '',
+    messageBody,
+    '',
+    '— WeSafe'
+  ].join('\n');
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5; max-width: 520px;">
+      <div style="background:#D82B2B; color:#fff; padding:16px 20px; border-radius:12px 12px 0 0;">
+        <h2 style="margin:0; font-size:18px;">${escapeHtml(subject)}</h2>
+      </div>
+      <div style="border:1px solid #eee; border-top:none; padding:20px; border-radius:0 0 12px 12px;">
+        <p style="margin:0 0 12px;">${greetingName ? `Hi ${escapeHtml(greetingName)},` : 'Hi,'}</p>
+        <p style="margin:0 0 16px; white-space:pre-line;">${escapeHtml(messageBody)}</p>
+        <p style="margin:0; color:#6b7280; font-size:13px;">This is an automated reminder from WeSafe.</p>
+      </div>
+    </div>
+  `;
+
+  try {
+    const { from } = resolveSmtpConfig();
+    const transporter = getTransporter();
+    await transporter.sendMail({ from, to: destination, subject, text, html });
+    return { skipped: false };
+  } catch (error) {
+    return {
+      skipped: true,
+      reason: 'error',
+      error: error?.message || String(error)
+    };
+  }
+};
+
+const escapeHtml = (value) =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 export const sendPasswordResetOtpEmail = async ({ toEmail, otpCode, expiresInMinutes }) => {
   const destination = String(toEmail || '').trim().toLowerCase();
   const otp = String(otpCode || '').trim();

@@ -39,6 +39,11 @@ const checklistItemSchema = new mongoose.Schema(
       type: Date,
       default: null
     },
+    inspectionIntervalMonths: {
+      type: Number,
+      default: null,
+      min: 1
+    },
     reminderEnabled: {
       type: Boolean,
       default: false

@@ -14,7 +14,7 @@ const notificationJobSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['material_expiry', 'inspection', 'custom'],
+      enum: ['material_expiry', 'inspection', 'checklist_item', 'premium_expiry', 'custom'],
       default: 'custom'
     },
     refId: {
@@ -35,7 +35,7 @@ const notificationJobSchema = new mongoose.Schema(
     },
     channel: {
       type: String,
-      enum: ['push', 'local'],
+      enum: ['push', 'local', 'email'],
       default: 'local'
     },
     status: {
