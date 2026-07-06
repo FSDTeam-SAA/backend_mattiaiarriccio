@@ -9,6 +9,7 @@ import Subscription from '../models/subscription.model.js';
 import CouponRedemption from '../models/couponRedemption.model.js';
 import { grantManual, revoke } from '../services/premium.service.js';
 import { logAudit, listAuditForUser } from '../services/audit.service.js';
+import { notifyUser } from '../services/notify.service.js';
 
 const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -160,6 +161,22 @@ export const grantPremium = catchAsync(async (req, res) => {
     source: 'manual',
     adminId
   });
+
+  // Notify the user their account is now Premium. Best-effort: sendToUser never
+  // throws and no-ops when the user has no device token or push is unconfigured,
+  // so a push failure can never block or fail the grant. Respect the per-user
+  // opt-out, consistent with the reminder dispatcher.
+  if (user.notificationsEnabled !== false) {
+    const isItalian = user.preferredLanguage === 'it';
+    await notifyUser(userId, {
+      title: isItalian ? 'Sei Premium! 🎉' : "You're Premium! 🎉",
+      body: isItalian
+        ? 'Il tuo account è stato aggiornato a Premium. Goditi tutte le funzioni sbloccate!'
+        : 'Your account has been upgraded to Premium. Enjoy all the unlocked features!',
+      type: 'premium_granted',
+      data: { type: 'premium_granted', screen: 'home' }
+    });
+  }
 
   await logAudit({
     adminId,

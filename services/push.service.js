@@ -4,19 +4,17 @@ import DeviceToken from '../models/deviceToken.model.js';
  * Firebase Cloud Messaging (FCM) push delivery.
  *
  * Configuration is lazy and best-effort: the engine must never crash because
- * push is unconfigured. Provide ONE of:
+ * push is unconfigured. Set:
  *  - FCM_SERVICE_ACCOUNT_JSON : the full service-account JSON as a string
- *    (recommended; identical to the JSON file Firebase hands you).
- *  - FCM_SERVER_KEY           : a legacy server key (HTTP v0 / legacy API).
+ *    (identical to the JSON file Firebase hands you).
  *
- * When neither is set, every send is a no-op that returns { skipped: true }.
+ * When it is not set, every send is a no-op that returns { skipped: true }.
  * sendToUser NEVER throws — it always resolves with a result summary so the
  * dispatch loop can record intent without aborting on a bad token.
  */
 
 let initialized = false;
 let messaging = null;
-let legacyServerKey = null;
 
 const tryInitFirebaseAdmin = async () => {
   if (initialized) {
@@ -25,14 +23,8 @@ const tryInitFirebaseAdmin = async () => {
   initialized = true;
 
   const serviceAccountJson = process.env.FCM_SERVICE_ACCOUNT_JSON;
-  legacyServerKey = process.env.FCM_SERVER_KEY || null;
-
-  if (!serviceAccountJson && !legacyServerKey) {
-    return;
-  }
 
   if (!serviceAccountJson) {
-    // Only the legacy server key is available; nothing to init for firebase-admin.
     return;
   }
 
@@ -68,7 +60,7 @@ const tryInitFirebaseAdmin = async () => {
 };
 
 export const isPushConfigured = () =>
-  Boolean(process.env.FCM_SERVICE_ACCOUNT_JSON || process.env.FCM_SERVER_KEY);
+  Boolean(process.env.FCM_SERVICE_ACCOUNT_JSON);
 
 const stringifyData = (data = {}) => {
   // FCM data payload values must be strings.
@@ -83,7 +75,10 @@ const stringifyData = (data = {}) => {
  * Send a notification to every registered device of a user.
  * Returns a plain summary object; never throws.
  */
-export const sendToUser = async (userId, { title, body, data = {} } = {}) => {
+export const sendToUser = async (
+  userId,
+  { title, body, data = {}, ttlMs } = {}
+) => {
   try {
     if (!isPushConfigured()) {
       console.warn(
@@ -108,19 +103,60 @@ export const sendToUser = async (userId, { title, body, data = {} } = {}) => {
       return { skipped: true, reason: 'messaging_unavailable' };
     }
 
+    // High priority + explicit channel so user-facing notifications are
+    // delivered promptly (not batched under Doze) and rendered on the app's
+    // reminders channel. TTL is optional and per-call: time-sensitive reminders
+    // pass a window (a late reminder is useless), while alerts like a premium
+    // upgrade omit it so FCM uses its default (~4 week) retention.
     const response = await messaging.sendEachForMulticast({
       tokens: tokenValues,
       notification: {
         title: String(title || ''),
         body: String(body || '')
       },
-      data: stringifyData(data)
+      data: stringifyData(data),
+      android: {
+        priority: 'high',
+        notification: { channelId: 'wesafe_reminders' },
+        ...(ttlMs ? { ttl: ttlMs } : {})
+      },
+      apns: {
+        headers: {
+          'apns-priority': '10',
+          'apns-push-type': 'alert',
+          ...(ttlMs
+            ? {
+                'apns-expiration': String(
+                  Math.floor(Date.now() / 1000) + Math.floor(ttlMs / 1000)
+                )
+              }
+            : {})
+        },
+        payload: { aps: { sound: 'default' } }
+      }
     });
+
+    // Prune tokens the FCM service reports as permanently invalid so the
+    // device_tokens collection doesn't accumulate dead entries over time.
+    const deadTokens = [];
+    response.responses.forEach((r, i) => {
+      const code = r.error?.code;
+      if (
+        code === 'messaging/registration-token-not-registered' ||
+        code === 'messaging/invalid-argument'
+      ) {
+        deadTokens.push(tokenValues[i]);
+      }
+    });
+    if (deadTokens.length > 0) {
+      await DeviceToken.deleteMany({ token: { $in: deadTokens } });
+    }
 
     return {
       skipped: false,
       successCount: response.successCount,
       failureCount: response.failureCount,
+      pruned: deadTokens.length,
       total: tokenValues.length
     };
   } catch (error) {

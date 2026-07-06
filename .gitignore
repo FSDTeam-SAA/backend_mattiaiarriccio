@@ -1,2 +1,8 @@
 node_modules
 config.bat
+
+# Secrets — never commit. Contains FCM_SERVICE_ACCOUNT_JSON (Firebase admin
+# private key), DB credentials, JWT secrets, etc.
+.env
+.env.*
+!.env.example

@@ -2,7 +2,7 @@ import NotificationJob from '../models/notificationJob.model.js';
 import User from '../models/user.model.js';
 import { createId } from '../lib/id.js';
 import { getSetting } from './settings.service.js';
-import { sendToUser } from './push.service.js';
+import { notifyUser } from './notify.service.js';
 import { sendReminderEmail } from './email.service.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -283,10 +283,19 @@ export const dispatchDueJobs = async () => {
 
     try {
       if (claimed.channel === 'push') {
-        const result = await sendToUser(claimed.userId, {
+        // Material expiry / inspection reminders deep-link to the material via
+        // refId; other types just open home. A reminder that arrives very late
+        // is useless, so cap delivery to a 12h window.
+        const screen =
+          claimed.type === 'material_expiry' || claimed.type === 'inspection'
+            ? 'material'
+            : 'home';
+        const result = await notifyUser(claimed.userId, {
           title: claimed.title,
           body: claimed.body,
-          data: { type: claimed.type, refId: claimed.refId || '', screen: 'home' }
+          type: claimed.type,
+          data: { type: claimed.type, refId: claimed.refId || '', screen },
+          ttlMs: 12 * 60 * 60 * 1000
         });
         // sendToUser never throws; a skip is still a successful "intent recorded".
         if (result?.skipped) {
