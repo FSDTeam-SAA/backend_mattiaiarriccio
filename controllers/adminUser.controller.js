@@ -162,21 +162,18 @@ export const grantPremium = catchAsync(async (req, res) => {
     adminId
   });
 
-  // Notify the user their account is now Premium. Best-effort: sendToUser never
-  // throws and no-ops when the user has no device token or push is unconfigured,
-  // so a push failure can never block or fail the grant. Respect the per-user
-  // opt-out, consistent with the reminder dispatcher.
-  if (user.notificationsEnabled !== false) {
-    const isItalian = user.preferredLanguage === 'it';
-    await notifyUser(userId, {
-      title: isItalian ? 'Sei Premium! 🎉' : "You're Premium! 🎉",
-      body: isItalian
-        ? 'Il tuo account è stato aggiornato a Premium. Goditi tutte le funzioni sbloccate!'
-        : 'Your account has been upgraded to Premium. Enjoy all the unlocked features!',
-      type: 'premium_granted',
-      data: { type: 'premium_granted', screen: 'home' }
-    });
-  }
+  // Always create the in-app notification so the user sees the Premium upgrade
+  // in the bell/history screen. Push delivery still respects the user opt-out.
+  const isItalian = user.preferredLanguage === 'it';
+  await notifyUser(userId, {
+    title: isItalian ? 'Sei Premium!' : "You're Premium!",
+    body: isItalian
+      ? 'Il tuo account e stato aggiornato a Premium. Goditi tutte le funzioni sbloccate!'
+      : 'Your account has been upgraded to Premium. Enjoy all the unlocked features!',
+    type: 'premium_granted',
+    data: { type: 'premium_granted', screen: 'home' },
+    sendPush: user.notificationsEnabled !== false
+  });
 
   await logAudit({
     adminId,
@@ -190,9 +187,10 @@ export const grantPremium = catchAsync(async (req, res) => {
   });
 
   sendSuccess(res, {
-    message: durationDays === null
-      ? 'Lifetime premium granted successfully'
-      : 'Premium granted successfully',
+    message:
+      durationDays === null
+        ? 'Lifetime premium granted successfully'
+        : 'Premium granted successfully',
     data: adminUserDetail(user.toObject ? user.toObject() : user)
   });
 });
