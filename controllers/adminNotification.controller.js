@@ -5,27 +5,60 @@ import { sendSuccess, parsePagination } from '../utils/response.js';
 import { createId } from '../lib/id.js';
 import NotificationJob from '../models/notificationJob.model.js';
 import NotificationTemplate from '../models/notificationTemplate.model.js';
+import NotificationCampaign from '../models/notificationCampaign.model.js';
 import User from '../models/user.model.js';
 import Category from '../models/category.model.js';
 import Material from '../models/material.model.js';
 import Checklist from '../models/checklist.model.js';
-import { notifyUser } from '../services/notify.service.js';
-import { sendReminderEmail } from '../services/email.service.js';
+import { requeueJob } from '../services/reminder.service.js';
 import { logAudit } from '../services/audit.service.js';
 
-const VALID_STATUSES = new Set(['pending', 'sent', 'canceled', 'failed']);
+const VALID_STATUSES = new Set(['pending', 'sent', 'skipped', 'canceled', 'failed']);
 const VALID_TYPES = new Set([
   'material_expiry',
   'inspection',
   'checklist_item',
   'premium_expiry',
+  'premium',
   'custom'
 ]);
 const VALID_CHANNELS = new Set(['push', 'local', 'email']);
 const ADMIN_SEND_CHANNELS = new Set(['push', 'email']);
-const AUDIENCE_TYPES = new Set(['all', 'free', 'premium', 'category']);
+const AUDIENCE_TYPES = new Set(['all', 'free', 'premium', 'category', 'specific']);
 
 const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Substitute supported {{variables}} in an admin notification with the
+ * recipient's data. Unknown placeholders are left untouched; missing values
+ * render as empty strings. Applies to both push and email copy.
+ *   {{name}} {{email}} {{expiryDate}} {{daysRemaining}} {{planName}}
+ */
+const renderTemplateVars = (text, user = {}) => {
+  const source = String(text || '');
+  if (!source.includes('{{')) return source;
+
+  const expiry = user.premiumExpiresAt ? new Date(user.premiumExpiresAt) : null;
+  const daysRemaining =
+    expiry && !Number.isNaN(expiry.getTime())
+      ? Math.max(0, Math.ceil((expiry.getTime() - Date.now()) / MS_PER_DAY))
+      : '';
+
+  const values = {
+    name: user.fullName || '',
+    email: user.email || '',
+    expiryDate: expiry && !Number.isNaN(expiry.getTime()) ? expiry.toISOString().slice(0, 10) : '',
+    daysRemaining: daysRemaining === '' ? '' : String(daysRemaining),
+    planName: user.tier === 'premium' ? 'Premium' : 'Free'
+  };
+
+  return source.replace(
+    /\{\{\s*(name|email|expiryDate|daysRemaining|planName)\s*\}\}/g,
+    (_, key) => values[key] ?? ''
+  );
+};
 
 const formatJob = (job) => ({
   id: job._id,
@@ -39,6 +72,9 @@ const formatJob = (job) => ({
   status: job.status,
   sentAt: job.sentAt || null,
   error: job.error || '',
+  attempts: job.attempts || 0,
+  maxAttempts: job.maxAttempts || 3,
+  campaignId: job.campaignId || null,
   createdAt: job.createdAt,
   updatedAt: job.updatedAt
 });
@@ -90,7 +126,11 @@ const normalizeChannels = (value, fallback = ['push']) => {
   return unique;
 };
 
-const normalizeAudience = (body = {}, fallback = { type: 'all', categorySlug: '' }) => {
+const normalizeAudience = (
+  body = {},
+  fallback = { type: 'all', categorySlug: '' },
+  { allowSpecific = false } = {}
+) => {
   const rawAudience = body.audience && typeof body.audience === 'object' ? body.audience : {};
   const requestedType =
     body.audienceType ??
@@ -114,9 +154,32 @@ const normalizeAudience = (body = {}, fallback = { type: 'all', categorySlug: ''
     throw new ApiError(StatusCodes.BAD_REQUEST, 'Category is required for category audience');
   }
 
+  if (type === 'specific') {
+    // 'specific' targets an explicit user list — only valid for direct sends,
+    // never persisted as a reusable template.
+    if (!allowSpecific) {
+      throw new ApiError(
+        StatusCodes.BAD_REQUEST,
+        'Specific-user audience can only be used when sending, not saved as a template'
+      );
+    }
+    const userIds = [
+      ...new Set(
+        parseArray(body.userIds ?? body.targetUserIds ?? rawAudience.userIds)
+          .map((id) => String(id || '').trim())
+          .filter(Boolean)
+      )
+    ];
+    if (userIds.length === 0) {
+      throw new ApiError(StatusCodes.BAD_REQUEST, 'Select at least one user');
+    }
+    return { type, categorySlug: '', userIds };
+  }
+
   return {
     type,
-    categorySlug: type === 'category' ? categorySlug : ''
+    categorySlug: type === 'category' ? categorySlug : '',
+    userIds: []
   };
 };
 
@@ -138,9 +201,17 @@ const buildCategoryValueQuery = (category) => {
 const resolveAudienceUsers = async (audience) => {
   const baseFilter = { role: 'user' };
 
+  if (audience.type === 'specific') {
+    const ids = Array.isArray(audience.userIds) ? audience.userIds : [];
+    if (ids.length === 0) return [];
+    return User.find({ ...baseFilter, _id: { $in: ids } })
+      .select('_id fullName email notificationsEnabled premiumExpiresAt tier')
+      .lean();
+  }
+
   if (audience.type === 'free' || audience.type === 'premium') {
     return User.find({ ...baseFilter, tier: audience.type })
-      .select('_id fullName email notificationsEnabled')
+      .select('_id fullName email notificationsEnabled premiumExpiresAt tier')
       .lean();
   }
 
@@ -171,90 +242,6 @@ const resolveAudienceUsers = async (audience) => {
   return User.find({ ...baseFilter, _id: { $in: userIds } })
     .select('_id fullName email notificationsEnabled')
     .lean();
-};
-
-const createJobRecord = async ({
-  userId,
-  title,
-  body,
-  channel,
-  status = 'sent',
-  error = '',
-  sentAt = new Date()
-}) =>
-  NotificationJob.create({
-    _id: createId('notifjob'),
-    userId,
-    type: 'custom',
-    title,
-    body,
-    scheduledAt: new Date(),
-    channel,
-    status,
-    sentAt,
-    error
-  });
-
-const deliverToUser = async ({ user, title, body, channel }) => {
-  if (user.notificationsEnabled === false) {
-    await createJobRecord({
-      userId: user._id,
-      title,
-      body,
-      channel,
-      error: `${channel} skipped: user opted out`
-    });
-    return { sent: 0, skipped: 1, failed: 0 };
-  }
-
-  try {
-    if (channel === 'push') {
-      const result = await notifyUser(user._id, {
-        title,
-        body,
-        type: 'custom',
-        data: { type: 'custom', screen: 'notifications' }
-      });
-      await createJobRecord({
-        userId: user._id,
-        title,
-        body,
-        channel,
-        error: result?.skipped ? `push skipped: ${result.reason || 'unknown'}` : ''
-      });
-      return result?.skipped
-        ? { sent: 0, skipped: 1, failed: 0 }
-        : { sent: 1, skipped: 0, failed: 0 };
-    }
-
-    const result = await sendReminderEmail({
-      toEmail: user.email,
-      toName: user.fullName,
-      title,
-      body
-    });
-    await createJobRecord({
-      userId: user._id,
-      title,
-      body,
-      channel,
-      error: result?.skipped ? `email skipped: ${result.reason || 'unknown'}` : ''
-    });
-    return result?.skipped
-      ? { sent: 0, skipped: 1, failed: 0 }
-      : { sent: 1, skipped: 0, failed: 0 };
-  } catch (error) {
-    await createJobRecord({
-      userId: user._id,
-      title,
-      body,
-      channel,
-      status: 'failed',
-      error: String(error?.message || error).slice(0, 500),
-      sentAt: null
-    });
-    return { sent: 0, skipped: 0, failed: 1 };
-  }
 };
 
 /**
@@ -450,7 +437,11 @@ export const sendAdminNotification = catchAsync(async (req, res) => {
   const title = String(req.body.title ?? template?.title ?? '').trim();
   const body = String(req.body.body ?? req.body.message ?? template?.body ?? '').trim();
   const channels = normalizeChannels(req.body.channels ?? template?.channels, template?.channels || ['push']);
-  const audience = normalizeAudience(req.body, template?.audience || { type: 'all', categorySlug: '' });
+  const audience = normalizeAudience(
+    req.body,
+    template?.audience || { type: 'all', categorySlug: '' },
+    { allowSpecific: true }
+  );
 
   if (!title) {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'Notification title is required');
@@ -459,21 +450,100 @@ export const sendAdminNotification = catchAsync(async (req, res) => {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'Notification message is required');
   }
 
-  const users = await resolveAudienceUsers(audience);
-  const summary = {
-    recipients: users.length,
-    channels,
-    audience,
-    push: { sent: 0, skipped: 0, failed: 0 },
-    email: { sent: 0, skipped: 0, failed: 0 }
-  };
+  const idempotencyKey =
+    typeof req.body.idempotencyKey === 'string' && req.body.idempotencyKey.trim()
+      ? req.body.idempotencyKey.trim()
+      : null;
 
+  const existingSummary = (campaign) => ({
+    campaignId: campaign._id,
+    recipients: campaign.recipients,
+    channels: campaign.channels,
+    audience,
+    queued: campaign.jobCount,
+    idempotent: true
+  });
+
+  // Idempotency: a re-submitted send (double click / retry) with the same key
+  // resolves to the already-created campaign instead of enqueueing again.
+  if (idempotencyKey) {
+    const existing = await NotificationCampaign.findOne({ idempotencyKey }).lean();
+    if (existing) {
+      sendSuccess(res, {
+        message: 'Notification already queued',
+        data: existingSummary(existing)
+      });
+      return;
+    }
+  }
+
+  const users = await resolveAudienceUsers(audience);
+  const jobCount = users.length * channels.length;
+
+  // Reserve the campaign first; its unique idempotencyKey guards against a
+  // concurrent duplicate request (the loser gets a duplicate-key error and
+  // returns the winning campaign).
+  let campaign;
+  try {
+    campaign = await NotificationCampaign.create({
+      _id: createId('campaign'),
+      idempotencyKey,
+      createdBy: adminId,
+      title,
+      body,
+      channels,
+      audienceType: audience.type,
+      recipients: users.length,
+      jobCount,
+      status: 'queued'
+    });
+  } catch (error) {
+    if (error?.code === 11000 && idempotencyKey) {
+      const existing = await NotificationCampaign.findOne({ idempotencyKey }).lean();
+      if (existing) {
+        sendSuccess(res, {
+          message: 'Notification already queued',
+          data: existingSummary(existing)
+        });
+        return;
+      }
+    }
+    throw error;
+  }
+
+  // Queue-based delivery: one pending NotificationJob per (user, channel), with
+  // per-recipient template variables resolved up front. The dispatcher applies
+  // per-user channel preferences and retry.
+  const now = new Date();
+  const jobs = [];
   for (const user of users) {
+    const renderedTitle = renderTemplateVars(title, user);
+    const renderedBody = renderTemplateVars(body, user);
     for (const channel of channels) {
-      const result = await deliverToUser({ user, title, body, channel });
-      summary[channel].sent += result.sent;
-      summary[channel].skipped += result.skipped;
-      summary[channel].failed += result.failed;
+      jobs.push({
+        _id: createId('notifjob'),
+        userId: user._id,
+        type: 'custom',
+        refId: null,
+        title: renderedTitle,
+        body: renderedBody,
+        scheduledAt: now,
+        channel,
+        status: 'pending',
+        campaignId: campaign._id
+      });
+    }
+  }
+
+  if (jobs.length > 0) {
+    try {
+      await NotificationJob.insertMany(jobs);
+    } catch (error) {
+      await NotificationCampaign.updateOne(
+        { _id: campaign._id },
+        { $set: { status: 'failed' } }
+      );
+      throw error;
     }
   }
 
@@ -482,11 +552,13 @@ export const sendAdminNotification = catchAsync(async (req, res) => {
     action: 'notification.send',
     meta: {
       templateId,
+      campaignId: campaign._id,
+      idempotencyKey,
       title,
       channels,
       audience,
       recipients: users.length,
-      summary
+      queued: jobs.length
     }
   });
 
@@ -494,7 +566,36 @@ export const sendAdminNotification = catchAsync(async (req, res) => {
     message:
       users.length === 0
         ? 'No users matched this notification audience'
-        : 'Notification sent successfully',
-    data: summary
+        : 'Notification queued for delivery',
+    data: {
+      campaignId: campaign._id,
+      recipients: users.length,
+      channels,
+      audience,
+      queued: jobs.length
+    }
+  });
+});
+
+/**
+ * Re-queue a single job for immediate re-delivery (manual admin retry). Works on
+ * failed jobs and, defensively, on any other status.
+ */
+export const retryNotification = catchAsync(async (req, res) => {
+  const job = await requeueJob(req.params.jobId);
+
+  if (!job) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'Notification job not found');
+  }
+
+  await logAudit({
+    adminId: req.auth.user._id,
+    action: 'notification.retry',
+    meta: { jobId: job._id }
+  });
+
+  sendSuccess(res, {
+    message: 'Notification re-queued for delivery',
+    data: formatJob(job)
   });
 });

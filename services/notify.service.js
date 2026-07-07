@@ -1,6 +1,7 @@
 import Notification from '../models/notification.model.js';
 import { createId } from '../lib/id.js';
 import { sendToUser } from './push.service.js';
+import { emitToUser } from './socket.service.js';
 
 /**
  * Single entry point for a user-facing notification. It always persists an
@@ -32,6 +33,19 @@ export const notifyUser = async (
       read: false
     });
     notificationId = record._id;
+
+    // Realtime: push the new in-app notification to the user's socket room so the
+    // bell/list updates instantly — independent of FCM. Best-effort; a missing
+    // socket connection is a no-op.
+    emitToUser(userId, 'newNotification', {
+      id: record._id,
+      userId,
+      title: record.title,
+      body: record.body,
+      type: record.type,
+      read: false,
+      createdAt: record.createdAt
+    });
   } catch (error) {
     console.error(
       `[notify.service] failed to persist in-app notification for ${userId}:`,

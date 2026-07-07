@@ -4,6 +4,7 @@ import { connectToDatabase } from './config/db.js';
 import { seedDatabase } from './services/seed.service.js';
 import { seedSettings } from './services/settings.service.js';
 import { initScheduler } from './services/scheduler.service.js';
+import { initSocket } from './services/socket.service.js';
 
 const PORT = process.env.PORT || 5000;
 
@@ -26,6 +27,15 @@ const startServer = async () => {
   server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
+
+  // Realtime (Socket.IO) on the same HTTP server. Never let a socket failure stop
+  // the API from serving requests.
+  try {
+    await initSocket(server);
+    console.log('[socket.service] Socket.IO realtime initialized.');
+  } catch (error) {
+    console.error('Failed to start Socket.IO server', error);
+  }
 };
 
 startServer().catch((error) => {

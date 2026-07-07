@@ -3,7 +3,14 @@ import User from '../models/user.model.js';
 import { createId } from '../lib/id.js';
 import { getSetting } from './settings.service.js';
 import { notifyUser } from './notify.service.js';
+import { sendToUser } from './push.service.js';
 import { sendReminderEmail } from './email.service.js';
+import {
+  effectiveNotificationEmail,
+  emailEnabledForUser,
+  pushEnabledForUser
+} from '../utils/notificationPrefs.js';
+import { renderNotificationContent } from './notificationContent.service.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -53,15 +60,16 @@ export const syncForMaterial = async (material) => {
         continue;
       }
 
+      const expiryDate = new Date(material.expirationDate).toISOString().slice(0, 10);
       jobs.push({
         _id: createId('notifjob'),
         userId: material.userId,
         type: 'material_expiry',
         refId: material._id,
         title: 'Material expiring soon',
-        body: `${material.name} expires on ${new Date(
-          material.expirationDate
-        ).toISOString().slice(0, 10)}.`,
+        body: `${material.name} expires on ${expiryDate}.`,
+        contentKey: 'material_expiry',
+        contentParams: { name: material.name, date: expiryDate },
         scheduledAt,
         channel,
         status: 'pending'
@@ -90,6 +98,8 @@ export const syncForMaterial = async (material) => {
       refId: material._id,
       title: 'Inspection due',
       body: `It's time to inspect ${material.name}.`,
+      contentKey: 'material_inspection',
+      contentParams: { name: material.name },
       scheduledAt: new Date(nextInspectionAt),
       channel: inspectionChannel,
       status: 'pending'
@@ -147,12 +157,17 @@ const checklistItemReminderJobs = ({ userId, checklistId, item, completed }) => 
   const channels = [];
   if (prefs.push) channels.push('push');
   if (prefs.email) channels.push('email');
-  // If the user enabled a reminder but no channel, default to push so the
-  // reminder still surfaces on the device.
-  if (channels.length === 0) channels.push('push');
+  // Honor the user's channel choices exactly: push off => no push job, email
+  // off => no email job. With neither channel selected there is nothing to
+  // deliver, so no job is scheduled. The app keeps at least one channel on
+  // while a reminder is enabled, so this only no-ops on a deliberate opt-out.
+  if (channels.length === 0) return jobs;
 
+  // English fallback (also what admin history renders); the dispatcher localizes
+  // via contentKey/contentParams to the recipient's language at send time.
+  const dueDate = formatDay(item.expirationDate);
   const title = 'Checklist reminder';
-  const body = `"${item.text}" is due on ${formatDay(item.expirationDate)}.`;
+  const body = `"${item.text}" is due on ${dueDate}.`;
 
   for (const channel of channels) {
     jobs.push({
@@ -162,6 +177,8 @@ const checklistItemReminderJobs = ({ userId, checklistId, item, completed }) => 
       refId: item._id,
       title,
       body,
+      contentKey: 'checklist_item_reminder',
+      contentParams: { item: item.text, date: dueDate },
       scheduledAt,
       channel,
       status: 'pending'
@@ -232,14 +249,109 @@ export const cancelForChecklistItems = async (userId, itemIds = []) => {
   return { deletedCount: result.deletedCount || 0 };
 };
 
+// Default retry policy for transient push/email failures. Backoff is indexed by
+// attempt number (attempt 1 waits 2 min, attempt 2 waits 10 min, ...). A job is
+// marked 'failed' only after maxAttempts transient failures.
+const DEFAULT_MAX_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS = [2 * 60 * 1000, 10 * 60 * 1000, 30 * 60 * 1000];
+
+// Resolve a job's display copy in the recipient's language. Falls back to the
+// job's stored (English) title/body when it carries no content key.
+const localizedContentFor = (job, language) => {
+  if (job.contentKey) {
+    const rendered = renderNotificationContent(
+      job.contentKey,
+      job.contentParams || {},
+      language === 'it' ? 'it' : 'en'
+    );
+    if (rendered) return rendered;
+  }
+  return { title: job.title, body: job.body };
+};
+
+// Deep-link target per notification type, consumed by the Flutter router.
+const screenForType = (type) => {
+  switch (type) {
+    case 'material_expiry':
+    case 'inspection':
+      return 'material';
+    case 'checklist_item':
+      return 'checklist';
+    case 'custom':
+    case 'premium':
+    case 'premium_expiry':
+      return 'notifications';
+    default:
+      return 'home';
+  }
+};
+
+/**
+ * A transient delivery failure: reschedule the job for a later attempt, or mark
+ * it 'failed' once attempts are exhausted. The optimistic claim already set
+ * status 'sent', so we reset it here.
+ */
+const scheduleRetryOrFail = async (claimed, errorMessage) => {
+  const attempts = (claimed.attempts || 0) + 1;
+  const maxAttempts = claimed.maxAttempts || DEFAULT_MAX_ATTEMPTS;
+  const message = String(errorMessage || 'delivery failed').slice(0, 500);
+
+  if (attempts < maxAttempts) {
+    const backoff = RETRY_BACKOFF_MS[Math.min(attempts - 1, RETRY_BACKOFF_MS.length - 1)];
+    const retryAt = new Date(Date.now() + backoff);
+    await NotificationJob.updateOne(
+      { _id: claimed._id },
+      {
+        $set: {
+          status: 'pending',
+          scheduledAt: retryAt,
+          retryAt,
+          sentAt: null,
+          attempts,
+          lastError: message,
+          error: message
+        }
+      }
+    );
+    return 'retry';
+  }
+
+  await NotificationJob.updateOne(
+    { _id: claimed._id },
+    {
+      $set: {
+        status: 'failed',
+        sentAt: null,
+        attempts,
+        lastError: message,
+        error: message
+      }
+    }
+  );
+  return 'failed';
+};
+
+/**
+ * Record a job that was intentionally not delivered (opt-out, no token, channel
+ * unconfigured). Distinct from 'sent' so statistics stay accurate.
+ */
+const markSkipped = async (claimed, note) => {
+  await NotificationJob.updateOne(
+    { _id: claimed._id },
+    { $set: { status: 'skipped', sentAt: null, error: String(note || '').slice(0, 500) } }
+  );
+};
+
 /**
  * Deliver every due pending job. Called by the scheduler every couple of minutes.
- * - Skips entirely when notificationsEnabled is false.
+ * - Skips entirely when the global notificationsEnabled setting is false.
  * - For each due job, atomically flips pending -> sent BEFORE dispatch using a
  *   status:'pending' guard so two overlapping ticks can never double-send.
- * - channel 'push' -> push.service.sendToUser; channel 'local' -> mark sent
- *   (the Flutter client schedules a local notification; the server only records intent).
- * - On error, the job is marked failed; the loop never throws.
+ * - channel 'push' -> notifyUser (in-app record + FCM); 'email' -> sendReminderEmail;
+ *   'local' -> mark sent (the Flutter client schedules its own local notification).
+ * - Per-user delivery honours notificationEmail + receive*Notifications prefs.
+ * - Transient push/email errors are retried with backoff (see scheduleRetryOrFail);
+ *   the loop never throws.
  */
 export const dispatchDueJobs = async () => {
   let notificationsEnabled = true;
@@ -250,7 +362,7 @@ export const dispatchDueJobs = async () => {
   }
 
   if (notificationsEnabled === false) {
-    return { processed: 0, sent: 0, failed: 0, skipped: true };
+    return { processed: 0, sent: 0, failed: 0, retried: 0, skipped: 0, disabled: true };
   }
 
   const now = new Date();
@@ -264,6 +376,8 @@ export const dispatchDueJobs = async () => {
 
   let sent = 0;
   let failed = 0;
+  let retried = 0;
+  let skipped = 0;
   let processed = 0;
 
   for (const job of dueJobs) {
@@ -283,69 +397,137 @@ export const dispatchDueJobs = async () => {
 
     try {
       if (claimed.channel === 'push') {
-        // Material expiry / inspection reminders deep-link to the material via
-        // refId; other types just open home. A reminder that arrives very late
-        // is useless, so cap delivery to a 12h window.
-        const screen =
-          claimed.type === 'material_expiry' || claimed.type === 'inspection'
-            ? 'material'
-            : 'home';
-        const result = await notifyUser(claimed.userId, {
-          title: claimed.title,
-          body: claimed.body,
-          type: claimed.type,
-          data: { type: claimed.type, refId: claimed.refId || '', screen },
-          ttlMs: 12 * 60 * 60 * 1000
-        });
-        // sendToUser never throws; a skip is still a successful "intent recorded".
-        if (result?.skipped) {
-          // Keep as 'sent' (intent recorded) but note the reason for monitoring.
-          await NotificationJob.updateOne(
-            { _id: claimed._id },
-            { $set: { error: `push skipped: ${result.reason || 'unknown'}` } }
+        const user = await User.findById(claimed.userId)
+          .select('notificationsEnabled receivePushNotifications preferredLanguage')
+          .lean();
+        const screen = screenForType(claimed.type);
+        const { title, body } = localizedContentFor(claimed, user?.preferredLanguage);
+        const pushAllowed = pushEnabledForUser(user);
+        const data = { type: claimed.type, refId: claimed.refId || '', screen };
+        // inApp:false -> push only (the in-app record was created elsewhere);
+        // otherwise notifyUser persists the record and sends push. Either way the
+        // device push is gated by the user's push preference.
+        let result;
+        if (claimed.inApp === false) {
+          result = pushAllowed
+            ? await sendToUser(claimed.userId, {
+                title,
+                body,
+                data,
+                ttlMs: 12 * 60 * 60 * 1000
+              })
+            : { skipped: true, reason: 'push_disabled' };
+        } else {
+          result = await notifyUser(claimed.userId, {
+            title,
+            body,
+            type: claimed.type,
+            data,
+            ttlMs: 12 * 60 * 60 * 1000,
+            sendPush: pushAllowed
+          });
+        }
+        // A transient FCM error is retryable. For a push-only backup job
+        // (inApp:false) a missing device token is also retryable — it just means
+        // the user hasn't registered a token yet (app not opened); keep trying so
+        // the push lands once they do. All other skips are recorded (not sent).
+        const retryableSkip =
+          result?.reason === 'error' ||
+          (claimed.inApp === false && result?.reason === 'no_tokens');
+        if (result?.skipped && retryableSkip) {
+          const outcome = await scheduleRetryOrFail(
+            claimed,
+            `push ${result.reason}: ${result.error || result.reason || 'unknown'}`
           );
+          outcome === 'failed' ? (failed += 1) : (retried += 1);
+          continue;
+        }
+        if (result?.skipped) {
+          await markSkipped(claimed, `push skipped: ${result.reason || 'unknown'}`);
+          skipped += 1;
+          continue;
         }
       } else if (claimed.channel === 'email') {
         const user = await User.findById(claimed.userId)
-          .select('email fullName notificationsEnabled')
+          .select(
+            'email fullName notificationEmail notificationsEnabled receiveEmailNotifications preferredLanguage'
+          )
           .lean();
 
         // Respect a per-user opt-out without failing the job.
-        if (user && user.notificationsEnabled === false) {
-          await NotificationJob.updateOne(
-            { _id: claimed._id },
-            { $set: { error: 'email skipped: user opted out' } }
+        if (!emailEnabledForUser(user)) {
+          await markSkipped(claimed, 'email skipped: user opted out');
+          skipped += 1;
+          continue;
+        }
+
+        const { title, body } = localizedContentFor(claimed, user?.preferredLanguage);
+        const result = await sendReminderEmail({
+          toEmail: effectiveNotificationEmail(user),
+          toName: user?.fullName,
+          title,
+          body
+        });
+        // A transient SMTP error is retryable; config/recipient skips are recorded.
+        if (result?.skipped && result.reason === 'error') {
+          const outcome = await scheduleRetryOrFail(
+            claimed,
+            `email error: ${result.error || 'unknown'}`
           );
-        } else {
-          const result = await sendReminderEmail({
-            toEmail: user?.email,
-            toName: user?.fullName,
-            title: claimed.title,
-            body: claimed.body
-          });
-          if (result?.skipped) {
-            await NotificationJob.updateOne(
-              { _id: claimed._id },
-              { $set: { error: `email skipped: ${result.reason || 'unknown'}` } }
-            );
-          }
+          outcome === 'failed' ? (failed += 1) : (retried += 1);
+          continue;
+        }
+        if (result?.skipped) {
+          await markSkipped(claimed, `email skipped: ${result.reason || 'unknown'}`);
+          skipped += 1;
+          continue;
         }
       }
-      // channel 'local': nothing to deliver server-side; already marked sent.
+      // Delivered (push/email) or a 'local' job (client-scheduled): count as sent.
       sent += 1;
     } catch (error) {
-      failed += 1;
-      await NotificationJob.updateOne(
-        { _id: claimed._id },
-        {
-          $set: {
-            status: 'failed',
-            error: String(error?.message || error).slice(0, 500)
-          }
-        }
-      );
+      const outcome = await scheduleRetryOrFail(claimed, error?.message || error);
+      outcome === 'failed' ? (failed += 1) : (retried += 1);
     }
   }
 
-  return { processed, sent, failed, skipped: false };
+  return { processed, sent, failed, retried, skipped };
+};
+
+/**
+ * Delete terminal jobs (sent/failed/canceled) older than `days` days so the
+ * notification_jobs collection does not grow unbounded. Pending jobs are never
+ * removed. Returns the number deleted.
+ */
+export const cleanupOldJobs = async (days = 30) => {
+  const cutoff = new Date(Date.now() - Math.max(1, days) * MS_PER_DAY);
+  const result = await NotificationJob.deleteMany({
+    status: { $in: ['sent', 'skipped', 'failed', 'canceled'] },
+    createdAt: { $lt: cutoff }
+  });
+  return { deletedCount: result.deletedCount || 0 };
+};
+
+/**
+ * Reset a job for immediate re-delivery (admin "retry"). Clears the terminal
+ * state and attempt counter so the next dispatch tick picks it up.
+ */
+export const requeueJob = async (jobId) => {
+  if (!jobId) return null;
+  const now = new Date();
+  return NotificationJob.findByIdAndUpdate(
+    jobId,
+    {
+      $set: {
+        status: 'pending',
+        scheduledAt: now,
+        retryAt: now,
+        sentAt: null,
+        attempts: 0,
+        error: '',
+        lastError: ''
+      }
+    },
+    { new: true }
+  ).lean();
 };

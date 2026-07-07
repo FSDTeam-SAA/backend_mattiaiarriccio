@@ -6,6 +6,7 @@ import Subscription from '../models/subscription.model.js';
 import { applySubscription } from '../services/premium.service.js';
 import { verifyGooglePurchase } from '../services/iap/google.service.js';
 import { verifyAppleTransaction } from '../services/iap/apple.service.js';
+import { notifyPremiumActivated } from '../services/subscriptionNotifications.service.js';
 
 const STORE_MAP = {
   google: 'google_play',
@@ -110,7 +111,24 @@ export const verifySubscription = catchAsync(async (req, res) => {
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
+  const wasPremium = user.tier === 'premium';
   const updatedUser = await applySubscription(user._id);
+  const isPremium = updatedUser?.tier === 'premium';
+
+  // Only a fresh free->premium activation notifies here. Renewals are detected
+  // and notified by the store webhooks (on an actual expiry advance), so a plain
+  // re-verify of an already-active subscription sends nothing. The activation
+  // enqueue is deduped by (user, event, expiry) to stay idempotent.
+  if (isPremium && !wasPremium) {
+    try {
+      await notifyPremiumActivated(user._id, updatedUser?.premiumExpiresAt ?? null);
+    } catch (error) {
+      console.error(
+        '[subscription.controller] premium notification failed:',
+        error?.message || error
+      );
+    }
+  }
 
   sendSuccess(res, {
     message: 'Subscription verified successfully',

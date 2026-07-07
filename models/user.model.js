@@ -46,7 +46,31 @@ const userSchema = new mongoose.Schema(
       enum: ['en', 'it'],
       default: 'en'
     },
+    // Master switch (kept for backwards compatibility). When false, neither push
+    // nor email is delivered regardless of the per-channel flags below.
     notificationsEnabled: {
+      type: Boolean,
+      default: true
+    },
+    // Where reminder/notification emails are delivered. Empty falls back to the
+    // account `email`. Kept separate so a user can receive notifications at a
+    // different address than the one they log in with.
+    notificationEmail: {
+      type: String,
+      default: '',
+      lowercase: true,
+      trim: true
+    },
+    notificationEmailVerified: {
+      type: Boolean,
+      default: false
+    },
+    // Per-channel opt-in. Both default on so existing users keep receiving.
+    receiveEmailNotifications: {
+      type: Boolean,
+      default: true
+    },
+    receivePushNotifications: {
       type: Boolean,
       default: true
     },

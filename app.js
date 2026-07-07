@@ -27,6 +27,7 @@ import adminSettingsRoutes from './routes/adminSettings.routes.js';
 import notFound from './middlewares/notFound.js';
 import globalErrorHandler from './middlewares/globalErrorHandler.js';
 import requestLogger from './middlewares/requestLogger.js';
+import { rateLimit } from './middlewares/rateLimit.js';
 import { getAiServiceInfo } from './services/ai.service.js';
 
 const app = express();
@@ -64,9 +65,15 @@ app.use('/api/v1/chat', chatRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/uploads', uploadRoutes);
 
-// Subscriptions / IAP + store webhooks (webhooks are PUBLIC, no auth)
+// Subscriptions / IAP + store webhooks (webhooks are PUBLIC, no auth).
+// Webhooks are rate-limited per source IP to blunt abuse without dropping the
+// modest, bursty volume Apple/Google actually send.
 app.use('/api/v1/subscriptions', subscriptionRoutes);
-app.use('/webhooks', webhookRoutes);
+app.use(
+  '/webhooks',
+  rateLimit({ windowMs: 60_000, max: 100, message: 'Too many webhook requests' }),
+  webhookRoutes
+);
 
 // Coupons (user redeem) + admin coupon management
 app.use('/api/v1/coupons', couponRoutes);

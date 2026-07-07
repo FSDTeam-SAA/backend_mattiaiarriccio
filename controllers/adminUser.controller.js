@@ -10,6 +10,7 @@ import CouponRedemption from '../models/couponRedemption.model.js';
 import { grantManual, revoke } from '../services/premium.service.js';
 import { logAudit, listAuditForUser } from '../services/audit.service.js';
 import { notifyUser } from '../services/notify.service.js';
+import { enqueuePremiumActivationPush } from '../services/subscriptionNotifications.service.js';
 
 const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -163,17 +164,39 @@ export const grantPremium = catchAsync(async (req, res) => {
   });
 
   // Always create the in-app notification so the user sees the Premium upgrade
-  // in the bell/history screen. Push delivery still respects the user opt-out.
+  // in the bell/history screen, and attempt an immediate push. Push delivery
+  // respects the user opt-out.
   const isItalian = user.preferredLanguage === 'it';
-  await notifyUser(userId, {
+  const pushAllowed = user.notificationsEnabled !== false;
+  const notifyResult = await notifyUser(userId, {
     title: isItalian ? 'Sei Premium!' : "You're Premium!",
     body: isItalian
       ? 'Il tuo account e stato aggiornato a Premium. Goditi tutte le funzioni sbloccate!'
       : 'Your account has been upgraded to Premium. Enjoy all the unlocked features!',
     type: 'premium_granted',
     data: { type: 'premium_granted', screen: 'home' },
-    sendPush: user.notificationsEnabled !== false
+    sendPush: pushAllowed
   });
+
+  // If the immediate push could not be delivered — most commonly because the
+  // user's device token was not registered at grant time (app closed / just
+  // starting) — enqueue a reliable push-only retry. The dispatcher then delivers
+  // it (with backoff) once the token is present, without a duplicate in-app
+  // record. Best-effort: never let this break the grant response.
+  if (
+    pushAllowed &&
+    notifyResult?.skipped &&
+    (notifyResult.reason === 'no_tokens' || notifyResult.reason === 'error')
+  ) {
+    try {
+      await enqueuePremiumActivationPush(userId, user.premiumExpiresAt ?? null);
+    } catch (error) {
+      console.error(
+        '[adminUser.controller] premium activation push enqueue failed:',
+        error?.message || error
+      );
+    }
+  }
 
   await logAudit({
     adminId,

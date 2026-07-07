@@ -190,6 +190,80 @@ export const updateUserPreferences = catchAsync(async (req, res) => {
   });
 });
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const notificationSettingsPayload = (user) => ({
+  accountEmail: user.email,
+  notificationEmail: user.notificationEmail || '',
+  // The address emails will actually be delivered to.
+  effectiveEmail: String(user.notificationEmail || user.email || '')
+    .trim()
+    .toLowerCase(),
+  notificationEmailVerified: Boolean(user.notificationEmailVerified),
+  receiveEmailNotifications: user.receiveEmailNotifications !== false,
+  receivePushNotifications: user.receivePushNotifications !== false,
+  notificationsEnabled: user.notificationsEnabled !== false
+});
+
+export const getNotificationSettings = catchAsync(async (req, res) => {
+  const user = await User.findById(req.auth.user._id).lean();
+
+  if (!user) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'User not found');
+  }
+
+  sendSuccess(res, {
+    message: 'Notification settings fetched successfully',
+    data: notificationSettingsPayload(user)
+  });
+});
+
+export const updateNotificationSettings = catchAsync(async (req, res) => {
+  const user = await User.findById(req.auth.user._id);
+
+  if (!user) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'User not found');
+  }
+
+  if (req.body.notificationEmail !== undefined) {
+    const raw = String(req.body.notificationEmail || '').trim().toLowerCase();
+    if (raw === '') {
+      // Clearing the override falls back to the account email.
+      user.notificationEmail = '';
+      user.notificationEmailVerified = false;
+    } else {
+      if (!EMAIL_REGEX.test(raw)) {
+        throw new ApiError(StatusCodes.BAD_REQUEST, 'Enter a valid email address');
+      }
+      if (raw !== user.notificationEmail) {
+        user.notificationEmail = raw;
+        // Matching the account email is trusted; any other address starts
+        // unverified. Delivery still works — verification is only a trust signal.
+        user.notificationEmailVerified = raw === user.email;
+      }
+    }
+  }
+
+  if (req.body.receiveEmailNotifications !== undefined) {
+    user.receiveEmailNotifications = Boolean(req.body.receiveEmailNotifications);
+  }
+
+  if (req.body.receivePushNotifications !== undefined) {
+    user.receivePushNotifications = Boolean(req.body.receivePushNotifications);
+  }
+
+  if (req.body.notificationsEnabled !== undefined) {
+    user.notificationsEnabled = Boolean(req.body.notificationsEnabled);
+  }
+
+  await user.save();
+
+  sendSuccess(res, {
+    message: 'Notification settings updated successfully',
+    data: notificationSettingsPayload(user)
+  });
+});
+
 export const changePassword = catchAsync(async (req, res) => {
   const currentPassword = String(req.body.currentPassword || '');
   const newPassword = ensurePasswordStrength(req.body.newPassword);

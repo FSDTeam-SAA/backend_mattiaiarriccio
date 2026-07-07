@@ -3,6 +3,7 @@ import catchAsync from '../utils/catchAsync.js';
 import ApiError from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/response.js';
 import DeviceToken from '../models/deviceToken.model.js';
+import { dispatchDueJobs } from '../services/reminder.service.js';
 
 const ALLOWED_PLATFORMS = ['android', 'ios', 'web'];
 
@@ -28,6 +29,17 @@ export const registerDeviceToken = catchAsync(async (req, res) => {
     { token },
     { $set: { userId: user._id, platform }, $setOnInsert: { token } },
     { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+
+  // A token just registered — immediately deliver any due push jobs that were
+  // waiting for it (e.g. an admin premium grant that fired before this device
+  // had a token). Fire-and-forget + best-effort so registration stays fast and a
+  // dispatch hiccup never fails the request. The scheduler is still the fallback.
+  dispatchDueJobs().catch((error) =>
+    console.error(
+      '[deviceToken.controller] post-register dispatch failed:',
+      error?.message || error
+    )
   );
 
   sendSuccess(res, {

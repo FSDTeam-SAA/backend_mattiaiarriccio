@@ -3,6 +3,12 @@ import { sendSuccess } from '../utils/response.js';
 import Subscription from '../models/subscription.model.js';
 import { applySubscription } from '../services/premium.service.js';
 import {
+  notifyPremiumRenewed,
+  notifyPremiumExpired,
+  notifyPremiumCanceled,
+  notifyPremiumPaymentFailed
+} from '../services/subscriptionNotifications.service.js';
+import {
   decodeRtdnMessage,
   verifyGooglePurchase
 } from '../services/iap/google.service.js';
@@ -56,10 +62,57 @@ const applyVerifiedState = async ({ transactionId, store, verified }) => {
   const ownerId = update.userId || existing?.userId;
   if (ownerId) {
     await applySubscription(ownerId);
+    // Best-effort user notification on the lifecycle transition. Never let a
+    // notification failure turn a benign webhook into a provider retry storm.
+    try {
+      await notifyOnSubscriptionTransition({ ownerId, existing, verified });
+    } catch (error) {
+      console.error(
+        '[webhook] premium notification failed:',
+        error?.message || error
+      );
+    }
     return true;
   }
 
   return false;
+};
+
+/**
+ * Maps a subscription status/expiry transition to a user notification.
+ *  - active with a later expiry than before  -> renewed
+ *  - expired / refunded                       -> expired
+ *  - canceled (auto-renew off)                -> canceled (access until expiresAt)
+ *  - in_grace (billing retry)                 -> payment failed
+ */
+const notifyOnSubscriptionTransition = async ({ ownerId, existing, verified }) => {
+  const prevStatus = existing?.status || null;
+  const newStatus = verified?.status || null;
+  const prevExpiry = existing?.expiresAt ? new Date(existing.expiresAt).getTime() : 0;
+  const newExpiry = verified?.expiresAt ? new Date(verified.expiresAt).getTime() : 0;
+
+  const nextExpiry = verified?.expiresAt ?? null;
+
+  if (newStatus === 'active') {
+    // A real renewal only: the expiry advanced past what we had on record. The
+    // notification is deduped by (user, event, new-expiry) so a replayed webhook
+    // for the same renewal never notifies twice.
+    if (existing && newExpiry > prevExpiry) {
+      await notifyPremiumRenewed(ownerId, nextExpiry);
+    }
+    return;
+  }
+  if ((newStatus === 'expired' || newStatus === 'refunded') && prevStatus !== newStatus) {
+    await notifyPremiumExpired(ownerId, nextExpiry);
+    return;
+  }
+  if (newStatus === 'canceled' && prevStatus !== 'canceled') {
+    await notifyPremiumCanceled(ownerId, nextExpiry);
+    return;
+  }
+  if (newStatus === 'in_grace' && prevStatus !== 'in_grace') {
+    await notifyPremiumPaymentFailed(ownerId, nextExpiry);
+  }
 };
 
 /**
