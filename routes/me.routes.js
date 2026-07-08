@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { requireAuth } from '../middlewares/auth.js';
-import { getEntitlements } from '../controllers/entitlement.controller.js';
+import {
+  getEntitlements,
+  getPaywallContent
+} from '../controllers/entitlement.controller.js';
 import {
   registerDeviceToken,
   unregisterDeviceToken
@@ -15,6 +18,7 @@ const router = Router();
 router.use(requireAuth('user'));
 
 router.get('/entitlements', getEntitlements);
+router.get('/paywall-content', getPaywallContent);
 router.post('/device-tokens', registerDeviceToken);
 router.delete('/device-tokens', unregisterDeviceToken);
 router.get('/notification-settings', getNotificationSettings);

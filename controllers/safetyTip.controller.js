@@ -65,6 +65,9 @@ export const listSafetyTips = catchAsync(async (req, res) => {
 
   const search = String(req.query.search || '').trim().toLowerCase();
   const categoryFilter = String(req.query.category || '').trim().toLowerCase();
+  const premiumFilter = String(req.query.premium || req.query.premiumOnly || '')
+    .trim()
+    .toLowerCase();
   const featuredOnly = String(req.query.featured || '').trim().toLowerCase() === 'true';
   const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
 
@@ -91,6 +94,12 @@ export const listSafetyTips = catchAsync(async (req, res) => {
         localizedName === categoryFilter
       );
     });
+  }
+
+  if (premiumFilter === 'premium' || premiumFilter === 'true') {
+    tips = tips.filter((tip) => Boolean(tip.premiumOnly));
+  } else if (premiumFilter === 'free' || premiumFilter === 'false') {
+    tips = tips.filter((tip) => !tip.premiumOnly);
   }
 
   if (featuredOnly) {

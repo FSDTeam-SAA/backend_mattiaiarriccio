@@ -73,6 +73,46 @@ export const DEFAULT_SETTINGS = {
       '👉 "Cosa mettere in un kit 72h?"\n\n' +
       'Prepararsi oggi può fare la differenza domani.\n' +
       'Da dove vuoi iniziare?'
+  },
+  // All text shown on the Premium / daily-limit paywall screen. Fully editable
+  // by the admin; the app resolves it to the user's language.
+  paywallContent: {
+    en: {
+      headline: 'Unlock WeSafe Premium',
+      subheadline:
+        "You've reached today's free limit. Upgrade for unlimited access.",
+      limitReachedNote: 'Free plan: {limit} messages per day.',
+      benefits: [
+        'Unlimited AI safety assistant messages',
+        'All premium checklists & guides',
+        'Priority emergency playbooks',
+        'No ads'
+      ],
+      monthlyLabel: 'Monthly',
+      yearlyLabel: 'Yearly',
+      yearlyBadge: 'Best value',
+      ctaLabel: 'Go Premium',
+      restoreLabel: 'Restore purchases',
+      footnote: 'Cancel anytime.'
+    },
+    it: {
+      headline: 'Sblocca WeSafe Premium',
+      subheadline:
+        'Hai raggiunto il limite gratuito di oggi. Passa a Premium per accesso illimitato.',
+      limitReachedNote: 'Piano gratuito: {limit} messaggi al giorno.',
+      benefits: [
+        'Messaggi illimitati con l’assistente AI',
+        'Tutte le checklist e guide premium',
+        'Playbook di emergenza prioritari',
+        'Nessuna pubblicità'
+      ],
+      monthlyLabel: 'Mensile',
+      yearlyLabel: 'Annuale',
+      yearlyBadge: 'Miglior valore',
+      ctaLabel: 'Passa a Premium',
+      restoreLabel: 'Ripristina acquisti',
+      footnote: 'Disdici quando vuoi.'
+    }
   }
 };
 
@@ -149,7 +189,62 @@ const VALIDATORS = {
     if (v.it !== undefined && (typeof v.it !== 'string' || !v.it.trim()))
       throw 'chatWelcomeMessage.it must be a non-empty string';
     return v;
+  },
+  paywallContent: (v) => {
+    if (!isPlainObject(v)) throw 'paywallContent must be an object { en, it }';
+    const stringFields = [
+      'headline',
+      'subheadline',
+      'limitReachedNote',
+      'monthlyLabel',
+      'yearlyLabel',
+      'yearlyBadge',
+      'ctaLabel',
+      'restoreLabel',
+      'footnote'
+    ];
+    const result = {};
+    for (const lang of ['en', 'it']) {
+      const incoming = isPlainObject(v[lang]) ? v[lang] : {};
+      const base = DEFAULT_SETTINGS.paywallContent[lang];
+      const merged = {};
+      for (const field of stringFields) {
+        merged[field] =
+          typeof incoming[field] === 'string' ? incoming[field] : base[field];
+      }
+      merged.benefits = Array.isArray(incoming.benefits)
+        ? incoming.benefits.map((b) => String(b).trim()).filter(Boolean)
+        : base.benefits;
+      result[lang] = merged;
+    }
+    return result;
   }
+};
+
+/**
+ * Resolves the localized paywall content for a given language, with the {limit}
+ * placeholder in limitReachedNote substituted with the caller's daily message
+ * limit. Falls back to English, then to whatever language is present.
+ */
+export const getResolvedPaywallContent = async (language, messageLimit) => {
+  const content = await getSetting('paywallContent');
+  const lang = language === 'it' ? 'it' : 'en';
+  const localized =
+    (isPlainObject(content) && (content[lang] || content.en || content.it)) ||
+    DEFAULT_SETTINGS.paywallContent.en;
+
+  const limitText =
+    messageLimit === null || messageLimit === undefined
+      ? ''
+      : String(messageLimit);
+
+  return {
+    ...localized,
+    limitReachedNote: String(localized.limitReachedNote || '').replace(
+      '{limit}',
+      limitText
+    )
+  };
 };
 
 const setCache = (key, value) => {

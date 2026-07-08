@@ -10,7 +10,7 @@ import User from '../models/user.model.js';
 import Category from '../models/category.model.js';
 import Material from '../models/material.model.js';
 import Checklist from '../models/checklist.model.js';
-import { requeueJob } from '../services/reminder.service.js';
+import { requeueJob, dispatchDueJobs } from '../services/reminder.service.js';
 import { logAudit } from '../services/audit.service.js';
 
 const VALID_STATUSES = new Set(['pending', 'sent', 'skipped', 'canceled', 'failed']);
@@ -545,6 +545,16 @@ export const sendAdminNotification = catchAsync(async (req, res) => {
       );
       throw error;
     }
+
+    // Deliver right away instead of waiting for the ~2-minute scheduler tick, so
+    // admin-sent notifications reach users in real time. Fire-and-forget: never
+    // block or fail the admin request on delivery.
+    dispatchDueJobs().catch((error) =>
+      console.error(
+        '[adminNotification] immediate dispatch failed:',
+        error?.message || error
+      )
+    );
   }
 
   await logAudit({

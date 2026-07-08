@@ -13,6 +13,7 @@ import Subscription from '../models/subscription.model.js';
 import NotificationJob from '../models/notificationJob.model.js';
 import { appConfig } from '../data/appConfig.js';
 import { createId } from '../lib/id.js';
+import { emitToUser } from '../services/socket.service.js';
 import {
   getManagedCategoryNames,
   getManagedCategoryMap,
@@ -505,6 +506,18 @@ export const createNotification = catchAsync(async (req, res) => {
     body: String(req.body.body || 'No details provided').trim(),
     type: String(req.body.type || 'general').trim(),
     read: false
+  });
+
+  // Realtime: push it to the user's socket room so it appears live without a
+  // reload. Best-effort; a missing socket connection is a no-op.
+  emitToUser(notification.userId, 'newNotification', {
+    id: notification._id,
+    userId: notification.userId,
+    title: notification.title,
+    body: notification.body,
+    type: notification.type,
+    read: notification.read,
+    createdAt: notification.createdAt
   });
 
   sendSuccess(res, {

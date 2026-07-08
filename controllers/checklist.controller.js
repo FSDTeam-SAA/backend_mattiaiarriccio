@@ -367,6 +367,9 @@ const getOrCreateChecklistProgress = async (userId, checklistId) => {
 export const listChecklists = catchAsync(async (req, res) => {
   const search = String(req.query.search || '').trim().toLowerCase();
   const category = String(req.query.category || '').trim().toLowerCase();
+  const premiumFilter = String(req.query.premium || req.query.premiumOnly || '')
+    .trim()
+    .toLowerCase();
   const userId = req.auth.user._id;
   const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
 
@@ -417,6 +420,12 @@ export const listChecklists = catchAsync(async (req, res) => {
         localizedName === category
       );
     });
+  }
+
+  if (premiumFilter === 'premium' || premiumFilter === 'true') {
+    checklists = checklists.filter((checklist) => Boolean(checklist.premiumOnly));
+  } else if (premiumFilter === 'free' || premiumFilter === 'false') {
+    checklists = checklists.filter((checklist) => !checklist.premiumOnly);
   }
 
   if (search) {

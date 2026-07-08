@@ -53,6 +53,11 @@ const mapItemDetails = (item = {}) => ({
   imageUrl: String(item.imageUrl || item.itemImageUrl || '').trim(),
   expirationDate: parseOptionalDate(item.expirationDate),
   inspectionDate: parseOptionalDate(item.inspectionDate),
+  inspectionIntervalMonths:
+    Number.isFinite(Number(item.inspectionIntervalMonths)) &&
+    Number(item.inspectionIntervalMonths) >= 1
+      ? Math.round(Number(item.inspectionIntervalMonths))
+      : null,
   reminderEnabled: Boolean(item.reminderEnabled),
   reminderDaysBefore:
     Number.isFinite(Number(item.reminderDaysBefore)) && Number(item.reminderDaysBefore) >= 0
@@ -135,6 +140,9 @@ const mapChecklistPayload = (checklist, categoryMap) => {
       imageUrl: item.imageUrl || '',
       expirationDate: item.expirationDate || null,
       inspectionDate: item.inspectionDate || null,
+      inspectionIntervalMonths: Number.isFinite(item.inspectionIntervalMonths)
+        ? item.inspectionIntervalMonths
+        : null,
       reminderEnabled: Boolean(item.reminderEnabled),
       reminderDaysBefore: Number.isFinite(item.reminderDaysBefore)
         ? item.reminderDaysBefore
