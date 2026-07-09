@@ -203,7 +203,12 @@ const notificationSettingsPayload = (user) => ({
   notificationEmailVerified: Boolean(user.notificationEmailVerified),
   receiveEmailNotifications: user.receiveEmailNotifications !== false,
   receivePushNotifications: user.receivePushNotifications !== false,
-  notificationsEnabled: user.notificationsEnabled !== false
+  notificationsEnabled: user.notificationsEnabled !== false,
+  // Per-category opt-in (default on).
+  notifyReminders: user.notifyReminders !== false,
+  notifyGuideUpdates: user.notifyGuideUpdates !== false,
+  notifyPremiumOffers: user.notifyPremiumOffers !== false,
+  notifyAppUpdates: user.notifyAppUpdates !== false
 });
 
 export const getNotificationSettings = catchAsync(async (req, res) => {
@@ -255,6 +260,22 @@ export const updateNotificationSettings = catchAsync(async (req, res) => {
 
   if (req.body.notificationsEnabled !== undefined) {
     user.notificationsEnabled = Boolean(req.body.notificationsEnabled);
+  }
+
+  if (req.body.notifyReminders !== undefined) {
+    user.notifyReminders = Boolean(req.body.notifyReminders);
+  }
+
+  if (req.body.notifyGuideUpdates !== undefined) {
+    user.notifyGuideUpdates = Boolean(req.body.notifyGuideUpdates);
+  }
+
+  if (req.body.notifyPremiumOffers !== undefined) {
+    user.notifyPremiumOffers = Boolean(req.body.notifyPremiumOffers);
+  }
+
+  if (req.body.notifyAppUpdates !== undefined) {
+    user.notifyAppUpdates = Boolean(req.body.notifyAppUpdates);
   }
 
   await user.save();
@@ -495,6 +516,18 @@ export const markNotificationRead = catchAsync(async (req, res) => {
       read: notification.read,
       createdAt: notification.createdAt
     }
+  });
+});
+
+export const markAllNotificationsRead = catchAsync(async (req, res) => {
+  const result = await Notification.updateMany(
+    { userId: req.auth.user._id, read: false },
+    { $set: { read: true } }
+  );
+
+  sendSuccess(res, {
+    message: 'All notifications marked as read',
+    data: { modified: result.modifiedCount ?? 0 }
   });
 });
 

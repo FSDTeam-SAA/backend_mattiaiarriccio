@@ -10,6 +10,7 @@ import CouponRedemption from '../models/couponRedemption.model.js';
 import { grantManual, revoke } from '../services/premium.service.js';
 import { logAudit, listAuditForUser } from '../services/audit.service.js';
 import { notifyUser } from '../services/notify.service.js';
+import { pushEnabledForUser } from '../utils/notificationPrefs.js';
 import { enqueuePremiumActivationPush } from '../services/subscriptionNotifications.service.js';
 
 const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -165,9 +166,11 @@ export const grantPremium = catchAsync(async (req, res) => {
 
   // Always create the in-app notification so the user sees the Premium upgrade
   // in the bell/history screen, and attempt an immediate push. Push delivery
-  // respects the user opt-out.
+  // respects the master switch AND the per-channel push opt-out. This is a
+  // transactional confirmation of an admin action, so it is intentionally NOT
+  // gated by the "premium offers" category (which governs marketing pushes).
   const isItalian = user.preferredLanguage === 'it';
-  const pushAllowed = user.notificationsEnabled !== false;
+  const pushAllowed = pushEnabledForUser(user);
   const notifyResult = await notifyUser(userId, {
     title: isItalian ? 'Sei Premium!' : "You're Premium!",
     body: isItalian

@@ -54,6 +54,35 @@ export const isEmailConfigured = () => {
 };
 
 /**
+ * Boot-time health check: confirms the SMTP credentials actually authenticate,
+ * so a dead/misconfigured mailbox is visible at startup instead of only when a
+ * reminder silently fails to send. Log-only and never throws.
+ */
+export const verifyEmailTransport = async () => {
+  if (!isEmailConfigured()) {
+    console.warn(
+      '[email.service] SMTP not configured (SMTP_USER / SMTP_PASS missing) — all email is disabled.'
+    );
+    return false;
+  }
+  try {
+    await getTransporter().verify();
+    console.log('[email.service] SMTP authenticated — email sending is ready.');
+    return true;
+  } catch (error) {
+    // Reset the cached transporter so a later credential fix is picked up without
+    // a restart-induced stale connection.
+    cachedTransporter = null;
+    console.error(
+      '[email.service] SMTP verification FAILED — email will NOT send:',
+      error?.message || error,
+      '\n[email.service] Gmail needs an App Password (16 chars) from an account with 2-Step Verification ON; the App Password must belong to SMTP_USER.'
+    );
+    return false;
+  }
+};
+
+/**
  * Generic reminder/notification email. Used by the notification dispatcher for
  * `email`-channel jobs (e.g. checklist item reminders).
  *
@@ -101,10 +130,23 @@ export const sendReminderEmail = async ({ toEmail, toName, title, body }) => {
     await transporter.sendMail({ from, to: destination, subject, text, html });
     return { skipped: false };
   } catch (error) {
+    // Surface send failures in the logs. Without this an invalid/revoked SMTP
+    // credential fails silently (the caller only records it on the job row), so
+    // a dead mailbox can go unnoticed. Bad-credential errors are called out
+    // explicitly because they mean EVERY email is failing, not just this one.
+    const message = error?.message || String(error);
+    const isAuthError = /invalid login|BadCredentials|5\.7\.8|535/i.test(message);
+    console.error(
+      `[email.service] Failed to send "${subject}" to ${destination}:`,
+      message,
+      isAuthError
+        ? '\n[email.service] SMTP AUTHENTICATION is failing — every email is affected. Check SMTP_USER / SMTP_PASS (Gmail requires an App Password with 2-Step Verification enabled).'
+        : ''
+    );
     return {
       skipped: true,
       reason: 'error',
-      error: error?.message || String(error)
+      error: message
     };
   }
 };

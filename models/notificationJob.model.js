@@ -20,6 +20,9 @@ const notificationJobSchema = new mongoose.Schema(
         'checklist_item',
         'premium_expiry',
         'premium',
+        'premium_offer',
+        'guide_update',
+        'app_update',
         'custom'
       ],
       default: 'custom'

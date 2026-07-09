@@ -126,6 +126,21 @@ const normalizeChannels = (value, fallback = ['push']) => {
   return unique;
 };
 
+// Notification category types an admin may send. Each maps to a user
+// per-category preference in utils/notificationPrefs.js. Unknown/blank values
+// fall back to 'app_update' (general announcement, gated by "App updates").
+const ADMIN_NOTIFICATION_TYPES = new Set([
+  'app_update',
+  'guide_update',
+  'premium_offer',
+  'custom'
+]);
+
+const normalizeNotificationType = (value) => {
+  const type = String(value || '').trim().toLowerCase();
+  return ADMIN_NOTIFICATION_TYPES.has(type) ? type : 'app_update';
+};
+
 const normalizeAudience = (
   body = {},
   fallback = { type: 'all', categorySlug: '' },
@@ -437,6 +452,12 @@ export const sendAdminNotification = catchAsync(async (req, res) => {
   const title = String(req.body.title ?? template?.title ?? '').trim();
   const body = String(req.body.body ?? req.body.message ?? template?.body ?? '').trim();
   const channels = normalizeChannels(req.body.channels ?? template?.channels, template?.channels || ['push']);
+  // Notification category type — decides which per-category preference gates
+  // delivery for each recipient (see utils/notificationPrefs.js). Defaults to
+  // 'app_update' (general announcement) when unspecified/invalid.
+  const notificationType = normalizeNotificationType(
+    req.body.notificationType ?? req.body.type ?? template?.notificationType
+  );
   const audience = normalizeAudience(
     req.body,
     template?.audience || { type: 'all', categorySlug: '' },
@@ -523,7 +544,7 @@ export const sendAdminNotification = catchAsync(async (req, res) => {
       jobs.push({
         _id: createId('notifjob'),
         userId: user._id,
-        type: 'custom',
+        type: notificationType,
         refId: null,
         title: renderedTitle,
         body: renderedBody,

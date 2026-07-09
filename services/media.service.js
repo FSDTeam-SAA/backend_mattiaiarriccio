@@ -19,12 +19,27 @@ export const ensureCloudinaryConfigured = () => {
   }
 };
 
+// Applied to every uploaded image so stored photos are normalized:
+//  - c_limit downscales anything larger than 1600x1600 while PRESERVING the
+//    aspect ratio (never upscales, never distorts) — so a huge or oddly-sized
+//    phone photo becomes a sensible, consistent size.
+//  - q_auto:good lets Cloudinary compress the stored image, cutting file size
+//    (faster loads) without visible quality loss.
+// Display widgets then use BoxFit.cover, so images always fit their box cleanly.
+const UPLOAD_TRANSFORMATION = [
+  { width: 1600, height: 1600, crop: 'limit', quality: 'auto:good' }
+];
+
 export const uploadImageBuffer = (buffer, folder = 'express-uploads') => {
   ensureCloudinaryConfigured();
 
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
-      { folder, resource_type: 'image' },
+      {
+        folder,
+        resource_type: 'image',
+        transformation: UPLOAD_TRANSFORMATION
+      },
       (error, result) => {
         if (error) {
           return reject(error);

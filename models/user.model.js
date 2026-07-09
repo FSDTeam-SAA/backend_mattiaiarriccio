@@ -74,6 +74,25 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true
     },
+    // Per-category opt-in, gating BOTH channels for notifications of that
+    // category (see utils/notificationPrefs.js for the type->category map).
+    // All default on so existing users keep receiving until they opt out.
+    notifyReminders: {
+      type: Boolean,
+      default: true
+    },
+    notifyGuideUpdates: {
+      type: Boolean,
+      default: true
+    },
+    notifyPremiumOffers: {
+      type: Boolean,
+      default: true
+    },
+    notifyAppUpdates: {
+      type: Boolean,
+      default: true
+    },
     onboardingCompleted: {
       type: Boolean,
       default: false

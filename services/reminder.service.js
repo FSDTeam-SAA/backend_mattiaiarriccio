@@ -7,8 +7,9 @@ import { sendToUser } from './push.service.js';
 import { sendReminderEmail } from './email.service.js';
 import {
   effectiveNotificationEmail,
-  emailEnabledForUser,
-  pushEnabledForUser
+  emailEnabledForType,
+  pushEnabledForType,
+  NOTIFICATION_PREF_FIELDS
 } from '../utils/notificationPrefs.js';
 import { renderNotificationContent } from './notificationContent.service.js';
 
@@ -398,11 +399,11 @@ export const dispatchDueJobs = async () => {
     try {
       if (claimed.channel === 'push') {
         const user = await User.findById(claimed.userId)
-          .select('notificationsEnabled receivePushNotifications preferredLanguage')
+          .select(`${NOTIFICATION_PREF_FIELDS} preferredLanguage`)
           .lean();
         const screen = screenForType(claimed.type);
         const { title, body } = localizedContentFor(claimed, user?.preferredLanguage);
-        const pushAllowed = pushEnabledForUser(user);
+        const pushAllowed = pushEnabledForType(user, claimed.type);
         const data = { type: claimed.type, refId: claimed.refId || '', screen };
         // inApp:false -> push only (the in-app record was created elsewhere);
         // otherwise notifyUser persists the record and sends push. Either way the
@@ -418,13 +419,23 @@ export const dispatchDueJobs = async () => {
               })
             : { skipped: true, reason: 'push_disabled' };
         } else {
+          // Email mirrors push via notifyUser, EXCEPT for job families that
+          // already enqueue their own dedicated email job (checklist items,
+          // premium lifecycle, admin campaigns) — those must not be emailed
+          // twice. Material reminders are push-only, so they mirror email here.
+          const managesEmailSeparately =
+            claimed.type === 'checklist_item' ||
+            claimed.type === 'premium' ||
+            claimed.type === 'premium_expiry' ||
+            Boolean(claimed.campaignId);
           result = await notifyUser(claimed.userId, {
             title,
             body,
             type: claimed.type,
             data,
             ttlMs: 12 * 60 * 60 * 1000,
-            sendPush: pushAllowed
+            sendPush: pushAllowed,
+            sendEmail: !managesEmailSeparately
           });
         }
         // A transient FCM error is retryable. For a push-only backup job
@@ -450,12 +461,12 @@ export const dispatchDueJobs = async () => {
       } else if (claimed.channel === 'email') {
         const user = await User.findById(claimed.userId)
           .select(
-            'email fullName notificationEmail notificationsEnabled receiveEmailNotifications preferredLanguage'
+            `email fullName notificationEmail ${NOTIFICATION_PREF_FIELDS} preferredLanguage`
           )
           .lean();
 
-        // Respect a per-user opt-out without failing the job.
-        if (!emailEnabledForUser(user)) {
+        // Respect a per-user / per-category opt-out without failing the job.
+        if (!emailEnabledForType(user, claimed.type)) {
           await markSkipped(claimed, 'email skipped: user opted out');
           skipped += 1;
           continue;

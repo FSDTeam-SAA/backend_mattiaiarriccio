@@ -32,6 +32,10 @@ import { getAiServiceInfo } from './services/ai.service.js';
 
 const app = express();
 
+// Deployed behind nginx / devtunnel: trust the first proxy hop so req.ip is the
+// real client address (used by the auth rate limiters) instead of the proxy's.
+app.set('trust proxy', 1);
+
 app.use(cors());
 app.use(requestLogger);
 app.use(express.json());

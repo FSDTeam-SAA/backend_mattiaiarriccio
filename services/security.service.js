@@ -60,7 +60,9 @@ export const verifyPassword = async (password, storedHash) => {
 
 export const createOpaqueToken = (size = 32) => crypto.randomBytes(size).toString('hex');
 
-export const createOtpCode = () => String(Math.floor(100000 + Math.random() * 900000));
+// Cryptographically secure 6-digit OTP. Math.random() is predictable and must
+// never be used for security tokens; crypto.randomInt draws from a CSPRNG.
+export const createOtpCode = () => String(crypto.randomInt(100000, 1000000));
 
 export const maskEmail = (email) => {
   const [localPart, domain] = ensureEmail(email).split('@');

@@ -5,6 +5,7 @@ import { seedDatabase } from './services/seed.service.js';
 import { seedSettings } from './services/settings.service.js';
 import { initScheduler } from './services/scheduler.service.js';
 import { initSocket } from './services/socket.service.js';
+import { verifyEmailTransport } from './services/email.service.js';
 
 const PORT = process.env.PORT || 5000;
 
@@ -23,6 +24,10 @@ const startServer = async () => {
   } catch (error) {
     console.error('Failed to start reminder scheduler', error);
   }
+
+  // Boot-time email health check (log-only, non-blocking) so an invalid SMTP
+  // credential is visible at startup rather than failing silently later.
+  verifyEmailTransport();
 
   server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
