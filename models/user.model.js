@@ -74,6 +74,28 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true
     },
+    // Wall-clock time, in `timezone`, at which reminders are delivered. Without
+    // these a reminder inherits the time-of-day stored on the expiry date —
+    // midnight UTC, i.e. 02:00 in Italy. Defaults to a civil 09:00.
+    reminderHour: {
+      type: Number,
+      min: 0,
+      max: 23,
+      default: 9
+    },
+    reminderMinute: {
+      type: Number,
+      min: 0,
+      max: 59,
+      default: 0
+    },
+    // IANA zone reported by the device (e.g. 'Europe/Rome'). Interpreting the
+    // hour above requires it; the server itself runs in UTC.
+    timezone: {
+      type: String,
+      trim: true,
+      default: 'Europe/Rome'
+    },
     // Per-category opt-in, gating BOTH channels for notifications of that
     // category (see utils/notificationPrefs.js for the type->category map).
     // All default on so existing users keep receiving until they opt out.

@@ -10,7 +10,9 @@ const reminderRuleSchema = new mongoose.Schema(
     },
     channel: {
       type: String,
-      enum: ['push', 'local'],
+      // 'local' fires on-device; 'push' and 'email' are delivered server-side
+      // by services/reminder.service.js.
+      enum: ['push', 'local', 'email'],
       default: 'local'
     }
   },

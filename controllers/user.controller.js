@@ -14,6 +14,13 @@ import NotificationJob from '../models/notificationJob.model.js';
 import { appConfig } from '../data/appConfig.js';
 import { createId } from '../lib/id.js';
 import { emitToUser } from '../services/socket.service.js';
+import { resyncRemindersForUser } from '../services/reminder.service.js';
+import {
+  clampHour,
+  clampMinute,
+  isValidTimeZone,
+  DEFAULT_TIMEZONE
+} from '../utils/reminderTime.js';
 import {
   getManagedCategoryNames,
   getManagedCategoryMap,
@@ -208,7 +215,11 @@ const notificationSettingsPayload = (user) => ({
   notifyReminders: user.notifyReminders !== false,
   notifyGuideUpdates: user.notifyGuideUpdates !== false,
   notifyPremiumOffers: user.notifyPremiumOffers !== false,
-  notifyAppUpdates: user.notifyAppUpdates !== false
+  notifyAppUpdates: user.notifyAppUpdates !== false,
+  // Local wall-clock time reminders are delivered at, and the zone it is read in.
+  reminderHour: clampHour(user.reminderHour),
+  reminderMinute: clampMinute(user.reminderMinute),
+  timezone: isValidTimeZone(user.timezone) ? user.timezone : DEFAULT_TIMEZONE
 });
 
 export const getNotificationSettings = catchAsync(async (req, res) => {
@@ -278,7 +289,42 @@ export const updateNotificationSettings = catchAsync(async (req, res) => {
     user.notifyAppUpdates = Boolean(req.body.notifyAppUpdates);
   }
 
+  // Changing when reminders fire has to move the jobs that were already
+  // materialized at the old time, otherwise the new preference only applies to
+  // reminders created from now on.
+  const previousTiming = `${user.reminderHour}|${user.reminderMinute}|${user.timezone}`;
+
+  if (req.body.reminderHour !== undefined) {
+    user.reminderHour = clampHour(req.body.reminderHour);
+  }
+
+  if (req.body.reminderMinute !== undefined) {
+    user.reminderMinute = clampMinute(req.body.reminderMinute);
+  }
+
+  if (req.body.timezone !== undefined) {
+    const zone = String(req.body.timezone || '').trim();
+    if (zone && !isValidTimeZone(zone)) {
+      throw new ApiError(StatusCodes.BAD_REQUEST, 'Unknown timezone');
+    }
+    user.timezone = zone || DEFAULT_TIMEZONE;
+  }
+
   await user.save();
+
+  const timingChanged =
+    previousTiming !== `${user.reminderHour}|${user.reminderMinute}|${user.timezone}`;
+  if (timingChanged) {
+    // Best-effort: a reschedule failure must not fail the settings update.
+    try {
+      await resyncRemindersForUser(user._id);
+    } catch (error) {
+      console.error(
+        '[user.controller] reminder resync failed:',
+        error?.message || error
+      );
+    }
+  }
 
   sendSuccess(res, {
     message: 'Notification settings updated successfully',
