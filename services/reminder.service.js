@@ -12,12 +12,28 @@ import {
   NOTIFICATION_PREF_FIELDS
 } from '../utils/notificationPrefs.js';
 import { renderNotificationContent } from './notificationContent.service.js';
+import { reminderInstantFor, reminderPrefsOf } from '../utils/reminderTime.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-const subtractDays = (date, days) => {
-  const base = date instanceof Date ? date : new Date(date);
-  return new Date(base.getTime() - Number(days || 0) * MS_PER_DAY);
+// 'local' is scheduled on-device by the Flutter client; 'push' and 'email' are
+// delivered by dispatchDueJobs.
+const MATERIAL_CHANNELS = new Set(['local', 'push', 'email']);
+
+/**
+ * Reminder delivery time for a user, defaulted when the user can't be loaded.
+ * Reminders must land at a civil hour in the user's own timezone rather than
+ * inheriting midnight-UTC from the stored expiry date.
+ */
+const loadReminderPrefs = async (userId) => {
+  try {
+    const user = await User.findById(userId)
+      .select('reminderHour reminderMinute timezone')
+      .lean();
+    return reminderPrefsOf(user);
+  } catch {
+    return reminderPrefsOf(null);
+  }
 };
 
 const isFutureOrNow = (date) => date instanceof Date && date.getTime() > Date.now();
@@ -48,14 +64,22 @@ export const syncForMaterial = async (material) => {
   }
 
   const jobs = [];
+  const prefs = await loadReminderPrefs(material.userId);
 
-  // Expiry reminders: scheduledAt = expirationDate - offsetDays.
+  // Expiry reminders: offsetDays before the expiry date, at the user's local
+  // reminder time (not the time-of-day stored on expirationDate).
   if (material.expirationDate) {
     const rules = Array.isArray(material.reminderRules) ? material.reminderRules : [];
     for (const rule of rules) {
       const offsetDays = Number(rule?.offsetDays || 0);
-      const channel = rule?.channel === 'push' ? 'push' : 'local';
-      const scheduledAt = subtractDays(material.expirationDate, offsetDays);
+      const channel = MATERIAL_CHANNELS.has(rule?.channel) ? rule.channel : 'local';
+      const scheduledAt = reminderInstantFor({
+        expirationDate: material.expirationDate,
+        offsetDays,
+        hour: prefs.hour,
+        minute: prefs.minute,
+        timeZone: prefs.timeZone
+      });
 
       if (!isFutureOrNow(scheduledAt)) {
         continue;
@@ -78,9 +102,19 @@ export const syncForMaterial = async (material) => {
     }
   }
 
-  // Inspection reminder: one job at inspection.nextInspectionAt.
+  // Inspection reminder: one job on the inspection's due date, at the user's
+  // local reminder time rather than whatever hour nextInspectionAt encodes.
   const nextInspectionAt = material.inspection?.nextInspectionAt;
-  if (nextInspectionAt && isFutureOrNow(new Date(nextInspectionAt))) {
+  const inspectionAt = nextInspectionAt
+    ? reminderInstantFor({
+        expirationDate: nextInspectionAt,
+        offsetDays: 0,
+        hour: prefs.hour,
+        minute: prefs.minute,
+        timeZone: prefs.timeZone
+      })
+    : null;
+  if (inspectionAt && isFutureOrNow(inspectionAt)) {
     // Inspection reminders default to the configured channel; fall back to local.
     let inspectionChannel = 'local';
     try {
@@ -101,7 +135,7 @@ export const syncForMaterial = async (material) => {
       body: `It's time to inspect ${material.name}.`,
       contentKey: 'material_inspection',
       contentParams: { name: material.name },
-      scheduledAt: new Date(nextInspectionAt),
+      scheduledAt: inspectionAt,
       channel: inspectionChannel,
       status: 'pending'
     });
@@ -141,7 +175,13 @@ export const cancelForMaterial = async (materialId) => {
 // before the item's expiration date. Completed items never get reminders.
 // Jobs are keyed by refId = item._id so a re-sync cleanly replaces them.
 
-const checklistItemReminderJobs = ({ userId, checklistId, item, completed }) => {
+const checklistItemReminderJobs = ({
+  userId,
+  checklistId,
+  item,
+  completed,
+  reminderPrefs
+}) => {
   const jobs = [];
 
   if (completed) return jobs;
@@ -151,7 +191,14 @@ const checklistItemReminderJobs = ({ userId, checklistId, item, completed }) => 
   const offsetDays = Number.isFinite(Number(item.reminderDaysBefore))
     ? Math.max(0, Math.round(Number(item.reminderDaysBefore)))
     : 0;
-  const scheduledAt = subtractDays(item.expirationDate, offsetDays);
+  const timing = reminderPrefs || reminderPrefsOf(null);
+  const scheduledAt = reminderInstantFor({
+    expirationDate: item.expirationDate,
+    offsetDays,
+    hour: timing.hour,
+    minute: timing.minute,
+    timeZone: timing.timeZone
+  });
   if (!isFutureOrNow(scheduledAt)) return jobs;
 
   const prefs = item.notificationPreferences || {};
@@ -203,7 +250,14 @@ export const syncForChecklistItem = async ({ userId, checklistId, item, complete
     status: 'pending'
   });
 
-  const jobs = checklistItemReminderJobs({ userId, checklistId, item, completed });
+  const reminderPrefs = await loadReminderPrefs(userId);
+  const jobs = checklistItemReminderJobs({
+    userId,
+    checklistId,
+    item,
+    completed,
+    reminderPrefs
+  });
   if (jobs.length === 0) return [];
   return NotificationJob.insertMany(jobs);
 };
@@ -219,6 +273,7 @@ export const syncForChecklist = async ({ userId, checklist, completedItemIds = [
 
   await cancelForChecklistItems(userId, items.map((it) => it._id));
 
+  const reminderPrefs = await loadReminderPrefs(userId);
   const jobs = [];
   for (const item of items) {
     jobs.push(
@@ -226,13 +281,57 @@ export const syncForChecklist = async ({ userId, checklist, completedItemIds = [
         userId,
         checklistId: checklist._id,
         item,
-        completed: completedSet.has(item._id)
+        completed: completedSet.has(item._id),
+        reminderPrefs
       })
     );
   }
 
   if (jobs.length === 0) return [];
   return NotificationJob.insertMany(jobs);
+};
+
+/**
+ * Rebuild every pending reminder for a user against their current reminder
+ * time / timezone.
+ *
+ * Jobs are materialized with an absolute `scheduledAt`, so changing the
+ * preferred hour would otherwise only affect reminders created afterwards —
+ * the ones already queued would still fire at the old time.
+ *
+ * Models are imported lazily: material.controller and checklist.controller both
+ * import this module, and importing them at the top level would form a cycle.
+ */
+export const resyncRemindersForUser = async (userId) => {
+  if (!userId) return { materials: 0, checklists: 0 };
+
+  const [{ default: Material }, { default: Checklist }, { default: ChecklistProgress }] =
+    await Promise.all([
+      import('../models/material.model.js'),
+      import('../models/checklist.model.js'),
+      import('../models/checklistProgress.model.js')
+    ]);
+
+  const materials = await Material.find({ userId }).lean();
+  for (const material of materials) {
+    await syncForMaterial(material);
+  }
+
+  // Only checklists the user has actually engaged with own reminder jobs.
+  const progressDocs = await ChecklistProgress.find({ userId }).lean();
+  let checklistCount = 0;
+  for (const progress of progressDocs) {
+    const checklist = await Checklist.findById(progress.checklistId).lean();
+    if (!checklist) continue;
+    await syncForChecklist({
+      userId,
+      checklist,
+      completedItemIds: progress.completedItemIds || []
+    });
+    checklistCount += 1;
+  }
+
+  return { materials: materials.length, checklists: checklistCount };
 };
 
 /** Delete pending checklist-item jobs for the given item ids. */
