@@ -703,13 +703,26 @@ export const addChecklistItem = catchAsync(async (req, res) => {
     userId: req.auth.user._id
   });
 
+  // Resolve an uploaded image file (multipart) to a hosted URL, mirroring the
+  // item-update path. Without this, a new item created WITH a photo would lose
+  // it (the file was never uploaded, only the text body was read).
+  const itemImageUrl = await resolveImageUrl({
+    req,
+    folder: 'checklists/items',
+    fieldNames: ['image', 'itemImage', 'itemImageFile', 'imageUrl'],
+    bodyValue: req.body.imageUrl !== undefined ? req.body.imageUrl : req.body.itemImageUrl,
+    currentValue: '',
+    defaultValue: ''
+  });
+
   const newItemId = createId('item');
   checklist.items.push({
     _id: newItemId,
     text,
     order: checklist.items.length + 1,
     icon: String(req.body.icon || req.body.iconEmoji || '').trim(),
-    ...mapItemDetails(req.body)
+    ...mapItemDetails(req.body),
+    imageUrl: itemImageUrl
   });
   await checklist.save();
 

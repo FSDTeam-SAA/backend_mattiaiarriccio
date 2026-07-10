@@ -12,10 +12,15 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
+// Accept large photos (modern phones easily exceed 10 MB) — they're downscaled
+// and compressed on upload by Cloudinary (see media.service), so a big original
+// is fine. Keep a ceiling so a single in-memory upload can't exhaust RAM.
+export const MAX_UPLOAD_MB = 25;
+
 const upload = multer({
   storage,
   limits: {
-    fileSize: 10 * 1024 * 1024
+    fileSize: MAX_UPLOAD_MB * 1024 * 1024
   },
   fileFilter
 });

@@ -38,7 +38,7 @@ router.post('/', checklistMediaUpload, createChecklist);
 router.get('/:checklistId', getChecklistById);
 router.patch('/:checklistId', checklistMediaUpload, updateChecklist);
 router.delete('/:checklistId', deleteChecklist);
-router.post('/:checklistId/items', addChecklistItem);
+router.post('/:checklistId/items', checklistItemMediaUpload, addChecklistItem);
 router.patch('/:checklistId/items/:itemId', checklistItemMediaUpload, updateChecklistItem);
 router.delete('/:checklistId/items/:itemId', deleteChecklistItem);
 

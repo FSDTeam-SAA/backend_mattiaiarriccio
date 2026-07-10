@@ -1,4 +1,5 @@
 import { StatusCodes } from 'http-status-codes';
+import { MAX_UPLOAD_MB } from './upload.js';
 
 const globalErrorHandler = (err, req, res, next) => {
   let statusCode = err.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
@@ -7,7 +8,7 @@ const globalErrorHandler = (err, req, res, next) => {
   if (err.name === 'MulterError') {
     statusCode = StatusCodes.BAD_REQUEST;
     if (err.code === 'LIMIT_FILE_SIZE') {
-      message = 'Image is too large. Maximum size is 10 MB.';
+      message = `Image is too large. Maximum size is ${MAX_UPLOAD_MB} MB.`;
     } else {
       message = err.message;
     }
