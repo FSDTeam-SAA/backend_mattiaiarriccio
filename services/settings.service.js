@@ -34,13 +34,19 @@ export const DEFAULT_SETTINGS = {
   },
   adsEnabled: true,
   adConfig: {
-    format: 'banner',
+    format: 'banner+native',
     placements: [],
     nativeFrequency: 5
   },
   admUnitIds: {
-    android: { banner: '', native: '' },
-    ios: { banner: '', native: '' }
+    android: {
+      banner: 'ca-app-pub-4038790464586655/6165570201',
+      native: 'ca-app-pub-4038790464586655/9262919524'
+    },
+    ios: {
+      banner: 'ca-app-pub-4038790464586655/4010592843',
+      native: 'ca-app-pub-4038790464586655/9071347838'
+    }
   },
   emergencyOverrideEnabled: true,
   reminderDefaults: {
