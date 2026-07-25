@@ -26,6 +26,18 @@ import { getSetting } from '../services/settings.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { parseArrayInput } from '../utils/requestParsers.js';
 
+const checklistMainImageUrl = (checklist = {}) => {
+  const iconUrl = String(checklist.iconUrl || '').trim();
+  if (iconUrl) return iconUrl;
+  return String(checklist.coverImageUrl || '').trim();
+};
+
+const hasImageInput = (req, fieldNames = [], removeKeys = []) =>
+  [...fieldNames, ...removeKeys].some(
+    (fieldName) =>
+      req.body?.[fieldName] !== undefined || Boolean(req.files?.[fieldName]?.[0])
+  );
+
 const parseOptionalDate = (value) => {
   if (value === undefined || value === null || value === '') return null;
   const parsed = new Date(value);
@@ -150,6 +162,7 @@ const createPersonalizedChecklistFromTemplate = async ({
   templateChecklist,
   userId
 }) => {
+  const mainImageUrl = checklistMainImageUrl(templateChecklist);
   const personalizedChecklist = await Checklist.create({
     _id: createId('checklist'),
     type: 'custom',
@@ -159,9 +172,9 @@ const createPersonalizedChecklistFromTemplate = async ({
     category: templateChecklist.category,
     description: templateChecklist.description,
     language: normalizeLanguageCode(templateChecklist.language, 'en'),
-    iconUrl: templateChecklist.iconUrl,
+    iconUrl: mainImageUrl,
     icon: templateChecklist.icon || '',
-    coverImageUrl: templateChecklist.coverImageUrl,
+    coverImageUrl: mainImageUrl,
     status: 'published',
     createdBy: userId,
     items: cloneChecklistItems(templateChecklist.items)
@@ -251,6 +264,7 @@ const resolveChecklistForEdit = async ({ checklistId, userId }) => {
 };
 
 const formatChecklist = (checklist, progress, categoryMap, language = 'en') => {
+  const mainImageUrl = checklistMainImageUrl(checklist);
   const completedItemIds = new Set(progress?.completedItemIds || []);
   const items = checklist.items
     .slice()
@@ -293,9 +307,9 @@ const formatChecklist = (checklist, progress, categoryMap, language = 'en') => {
     categorySlug: checklist.category,
     description: checklist.description,
     language: normalizeLanguageCode(checklist.language, 'en'),
-    iconUrl: checklist.iconUrl,
+    iconUrl: mainImageUrl,
     icon: checklist.icon || '',
-    coverImageUrl: checklist.coverImageUrl,
+    coverImageUrl: mainImageUrl,
     status: checklist.status,
     premiumOnly: Boolean(checklist.premiumOnly),
     createdBy: checklist.createdBy,
@@ -311,6 +325,7 @@ const formatChecklist = (checklist, progress, categoryMap, language = 'en') => {
 };
 
 const formatLockedChecklist = (checklist, categoryMap, language = 'en') => {
+  const mainImageUrl = checklistMainImageUrl(checklist);
   const category = categoryMap?.get(checklist.category);
 
   return {
@@ -326,9 +341,9 @@ const formatLockedChecklist = (checklist, categoryMap, language = 'en') => {
     categorySlug: checklist.category,
     description: checklist.description,
     language: normalizeLanguageCode(checklist.language, 'en'),
-    iconUrl: checklist.iconUrl,
+    iconUrl: mainImageUrl,
     icon: checklist.icon || '',
-    coverImageUrl: checklist.coverImageUrl,
+    coverImageUrl: mainImageUrl,
     status: checklist.status,
     premiumOnly: true,
     locked: true,
@@ -520,6 +535,13 @@ export const createChecklist = catchAsync(async (req, res) => {
     removeKey: 'removeCoverImageUrl',
     defaultValue: 'https://placehold.co/1200x800/png?text=Custom+Checklist'
   });
+  const mainImageUrl = hasImageInput(
+    req,
+    ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
+    ['removeIconUrl']
+  )
+    ? iconUrl
+    : coverImageUrl;
 
   const language = resolveRequestLanguage(req, req.auth.user.preferredLanguage);
   const categorySlug = await resolveManagedCategorySlug(req.body.category);
@@ -533,9 +555,9 @@ export const createChecklist = catchAsync(async (req, res) => {
     category: categorySlug,
     description: String(req.body.description || '').trim(),
     language: ensureSupportedLanguage(req.body.language || language),
-    iconUrl,
+    iconUrl: mainImageUrl,
     icon: String(req.body.iconEmoji || req.body.icon_text || '').trim(),
-    coverImageUrl,
+    coverImageUrl: mainImageUrl,
     status: 'published',
     createdBy: req.auth.user._id,
     items: normalizeItems(itemsInput)
@@ -576,23 +598,40 @@ export const updateChecklist = catchAsync(async (req, res) => {
     checklist.language = ensureSupportedLanguage(req.body.language);
   }
 
-  checklist.iconUrl = await resolveImageUrl({
+  const hasChecklistIconInput = hasImageInput(
     req,
-    folder: 'checklists/icons',
-    fieldNames: ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
-    bodyValue: req.body.iconUrl,
-    removeKey: 'removeIconUrl',
-    currentValue: checklist.iconUrl
-  });
+    ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
+    ['removeIconUrl']
+  );
+  const hasChecklistCoverInput = hasImageInput(
+    req,
+    ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
+    ['removeCoverImageUrl']
+  );
+  let mainImageUrl = checklistMainImageUrl(checklist);
 
-  checklist.coverImageUrl = await resolveImageUrl({
-    req,
-    folder: 'checklists/covers',
-    fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
-    bodyValue: req.body.coverImageUrl,
-    removeKey: 'removeCoverImageUrl',
-    currentValue: checklist.coverImageUrl
-  });
+  if (hasChecklistIconInput) {
+    mainImageUrl = await resolveImageUrl({
+      req,
+      folder: 'checklists/icons',
+      fieldNames: ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
+      bodyValue: req.body.iconUrl,
+      removeKey: 'removeIconUrl',
+      currentValue: checklist.iconUrl
+    });
+  } else if (hasChecklistCoverInput) {
+    mainImageUrl = await resolveImageUrl({
+      req,
+      folder: 'checklists/covers',
+      fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
+      bodyValue: req.body.coverImageUrl,
+      removeKey: 'removeCoverImageUrl',
+      currentValue: checklist.coverImageUrl
+    });
+  }
+
+  checklist.iconUrl = mainImageUrl;
+  checklist.coverImageUrl = mainImageUrl;
 
   if (req.body.iconEmoji !== undefined || req.body.icon_text !== undefined) {
     const nextIcon = String(

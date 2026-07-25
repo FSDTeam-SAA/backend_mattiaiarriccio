@@ -472,6 +472,7 @@ export const getHome = catchAsync(async (req, res) => {
       ],
       featuredGuides: featuredGuides.map((tip) => {
         const category = categoryMap.get(tip.category);
+        const mainImageUrl = String(tip.coverImageUrl || tip.thumbnailUrl || '').trim();
         return {
           id: tip._id,
           slug: tip.slug,
@@ -479,7 +480,7 @@ export const getHome = catchAsync(async (req, res) => {
           category: localizedCategoryName(category, language),
           categorySlug: tip.category,
           summary: tip.summary,
-          thumbnailUrl: tip.thumbnailUrl,
+          thumbnailUrl: mainImageUrl,
           estimatedReadMinutes: tip.estimatedReadMinutes
         };
       }),

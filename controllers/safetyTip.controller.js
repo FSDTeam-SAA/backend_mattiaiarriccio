@@ -15,8 +15,15 @@ import { isPremiumUser } from '../services/premium.service.js';
 import { getSetting } from '../services/settings.service.js';
 import { paginate, parsePagination, sendSuccess } from '../utils/response.js';
 
+const safetyTipMainImageUrl = (tip = {}) => {
+  const coverImageUrl = String(tip.coverImageUrl || '').trim();
+  if (coverImageUrl) return coverImageUrl;
+  return String(tip.thumbnailUrl || '').trim();
+};
+
 const mapSafetyTipCard = (tip, categoryMap, language, { locked = false } = {}) => {
   const category = categoryMap.get(tip.category);
+  const mainImageUrl = safetyTipMainImageUrl(tip);
   return {
     id: tip._id,
     slug: tip.slug,
@@ -25,8 +32,8 @@ const mapSafetyTipCard = (tip, categoryMap, language, { locked = false } = {}) =
     categorySlug: tip.category,
     summary: tip.summary,
     estimatedReadMinutes: tip.estimatedReadMinutes,
-    thumbnailUrl: tip.thumbnailUrl,
-    coverImageUrl: tip.coverImageUrl,
+    thumbnailUrl: mainImageUrl,
+    coverImageUrl: mainImageUrl,
     tags: tip.tags,
     language: normalizeLanguageCode(tip.language, 'en'),
     featured: tip.featured,
@@ -177,6 +184,7 @@ export const getSafetyTipById = catchAsync(async (req, res) => {
 
   const category = categoryMap.get(tip.category);
   const user = req.auth.user;
+  const mainImageUrl = safetyTipMainImageUrl(tip);
 
   sendSuccess(res, {
     message: 'Safety tip fetched successfully',
@@ -192,8 +200,8 @@ export const getSafetyTipById = catchAsync(async (req, res) => {
       dontList: tip.dontList,
       tags: tip.tags,
       estimatedReadMinutes: tip.estimatedReadMinutes,
-      coverImageUrl: tip.coverImageUrl,
-      thumbnailUrl: tip.thumbnailUrl,
+      coverImageUrl: mainImageUrl,
+      thumbnailUrl: mainImageUrl,
       status: tip.status,
       language: normalizeLanguageCode(tip.language, 'en'),
       featured: tip.featured,

@@ -37,6 +37,24 @@ import {
   parseIntegerInput
 } from '../utils/requestParsers.js';
 
+const checklistMainImageUrl = (checklist = {}) => {
+  const iconUrl = String(checklist.iconUrl || '').trim();
+  if (iconUrl) return iconUrl;
+  return String(checklist.coverImageUrl || '').trim();
+};
+
+const safetyTipMainImageUrl = (tip = {}) => {
+  const coverImageUrl = String(tip.coverImageUrl || '').trim();
+  if (coverImageUrl) return coverImageUrl;
+  return String(tip.thumbnailUrl || '').trim();
+};
+
+const hasImageInput = (req, fieldNames = [], removeKeys = []) =>
+  [...fieldNames, ...removeKeys].some(
+    (fieldName) =>
+      req.body?.[fieldName] !== undefined || Boolean(req.files?.[fieldName]?.[0])
+  );
+
 const parseOptionalDate = (value) => {
   if (value === undefined || value === null || value === '') return null;
   const parsed = new Date(value);
@@ -113,6 +131,7 @@ const normalizeContentSections = (sections = [], fallbackBody = '') => {
 
 const mapChecklistPayload = (checklist, categoryMap) => {
   const category = categoryMap?.get(checklist.category);
+  const mainImageUrl = checklistMainImageUrl(checklist);
   return {
     id: checklist._id,
     type: checklist.type,
@@ -123,9 +142,9 @@ const mapChecklistPayload = (checklist, categoryMap) => {
     categorySlug: checklist.category,
     description: checklist.description,
     language: normalizeLanguageCode(checklist.language, 'en'),
-    iconUrl: checklist.iconUrl,
+    iconUrl: mainImageUrl,
     icon: checklist.icon || '',
-    coverImageUrl: checklist.coverImageUrl,
+    coverImageUrl: mainImageUrl,
     status: checklist.status,
     premiumOnly: Boolean(checklist.premiumOnly),
     order: Number.isFinite(checklist.order) ? checklist.order : 0,
@@ -158,6 +177,7 @@ const mapChecklistPayload = (checklist, categoryMap) => {
 
 const mapSafetyTipPayload = (tip, categoryMap) => {
   const category = categoryMap?.get(tip.category);
+  const mainImageUrl = safetyTipMainImageUrl(tip);
   return {
     id: tip._id,
     slug: tip.slug,
@@ -170,8 +190,8 @@ const mapSafetyTipPayload = (tip, categoryMap) => {
     dontList: tip.dontList,
     tags: tip.tags,
     estimatedReadMinutes: tip.estimatedReadMinutes,
-    coverImageUrl: tip.coverImageUrl,
-    thumbnailUrl: tip.thumbnailUrl,
+    coverImageUrl: mainImageUrl,
+    thumbnailUrl: mainImageUrl,
     status: tip.status,
     language: tip.language,
     featured: tip.featured,
@@ -438,6 +458,13 @@ export const createAdminChecklist = catchAsync(async (req, res) => {
     removeKey: 'removeCoverImageUrl',
     defaultValue: 'https://placehold.co/1200x800/png?text=Checklist'
   });
+  const mainImageUrl = hasImageInput(
+    req,
+    ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
+    ['removeIconUrl']
+  )
+    ? iconUrl
+    : coverImageUrl;
 
   const checklist = await Checklist.create({
     _id: createId('checklist'),
@@ -447,9 +474,9 @@ export const createAdminChecklist = catchAsync(async (req, res) => {
     category: await resolveManagedCategorySlug(req.body.category),
     description: String(req.body.description || '').trim(),
     language: ensureSupportedLanguage(req.body.language || 'en'),
-    iconUrl,
+    iconUrl: mainImageUrl,
     icon: String(req.body.iconEmoji || req.body.icon_text || '').trim(),
-    coverImageUrl,
+    coverImageUrl: mainImageUrl,
     status: String(req.body.status || 'published').trim(),
     premiumOnly: parseBooleanInput(req.body.premiumOnly) ?? false,
     order: parseIntegerInput(req.body.order) ?? 0,
@@ -503,23 +530,40 @@ export const updateAdminChecklist = catchAsync(async (req, res) => {
     checklist.language = ensureSupportedLanguage(req.body.language);
   }
 
-  checklist.iconUrl = await resolveImageUrl({
+  const hasChecklistIconInput = hasImageInput(
     req,
-    folder: 'checklists/icons',
-    fieldNames: ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
-    bodyValue: req.body.iconUrl,
-    removeKey: 'removeIconUrl',
-    currentValue: checklist.iconUrl
-  });
+    ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
+    ['removeIconUrl']
+  );
+  const hasChecklistCoverInput = hasImageInput(
+    req,
+    ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
+    ['removeCoverImageUrl']
+  );
+  let mainChecklistImageUrl = checklistMainImageUrl(checklist);
 
-  checklist.coverImageUrl = await resolveImageUrl({
-    req,
-    folder: 'checklists/covers',
-    fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
-    bodyValue: req.body.coverImageUrl,
-    removeKey: 'removeCoverImageUrl',
-    currentValue: checklist.coverImageUrl
-  });
+  if (hasChecklistIconInput) {
+    mainChecklistImageUrl = await resolveImageUrl({
+      req,
+      folder: 'checklists/icons',
+      fieldNames: ['icon', 'iconImage', 'iconImageFile', 'iconUrl'],
+      bodyValue: req.body.iconUrl,
+      removeKey: 'removeIconUrl',
+      currentValue: checklist.iconUrl
+    });
+  } else if (hasChecklistCoverInput) {
+    mainChecklistImageUrl = await resolveImageUrl({
+      req,
+      folder: 'checklists/covers',
+      fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
+      bodyValue: req.body.coverImageUrl,
+      removeKey: 'removeCoverImageUrl',
+      currentValue: checklist.coverImageUrl
+    });
+  }
+
+  checklist.iconUrl = mainChecklistImageUrl;
+  checklist.coverImageUrl = mainChecklistImageUrl;
 
   if (req.body.iconEmoji !== undefined || req.body.icon_text !== undefined) {
     const nextIcon = String(
@@ -626,6 +670,13 @@ export const createAdminSafetyTip = catchAsync(async (req, res) => {
     removeKey: 'removeThumbnailUrl',
     defaultValue: 'https://placehold.co/600x400/png?text=Safety+Tip'
   });
+  const mainImageUrl = hasImageInput(
+    req,
+    ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
+    ['removeCoverImageUrl']
+  )
+    ? coverImageUrl
+    : thumbnailUrl;
 
   const tip = await SafetyTip.create({
     _id: createId('tip'),
@@ -647,8 +698,8 @@ export const createAdminSafetyTip = catchAsync(async (req, res) => {
       ? tagsInput.map((item) => String(item).trim()).filter(Boolean)
       : [],
     estimatedReadMinutes,
-    coverImageUrl,
-    thumbnailUrl,
+    coverImageUrl: mainImageUrl,
+    thumbnailUrl: mainImageUrl,
     status: String(req.body.status || 'published').trim(),
     language: ensureSupportedLanguage(req.body.language || 'en'),
     featured: parseBooleanInput(req.body.featured) ?? false,
@@ -733,23 +784,40 @@ export const updateAdminSafetyTip = catchAsync(async (req, res) => {
       parseIntegerInput(req.body.estimatedReadMinutes) ?? tip.estimatedReadMinutes;
   }
 
-  tip.coverImageUrl = await resolveImageUrl({
+  const hasTipCoverInput = hasImageInput(
     req,
-    folder: 'safety-tips/covers',
-    fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
-    bodyValue: req.body.coverImageUrl,
-    removeKey: 'removeCoverImageUrl',
-    currentValue: tip.coverImageUrl
-  });
+    ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
+    ['removeCoverImageUrl']
+  );
+  const hasTipThumbnailInput = hasImageInput(
+    req,
+    ['thumbnail', 'thumbnailImage', 'thumbnailImageFile', 'thumbnailUrl'],
+    ['removeThumbnailUrl']
+  );
+  let mainTipImageUrl = safetyTipMainImageUrl(tip);
 
-  tip.thumbnailUrl = await resolveImageUrl({
-    req,
-    folder: 'safety-tips/thumbnails',
-    fieldNames: ['thumbnail', 'thumbnailImage', 'thumbnailImageFile', 'thumbnailUrl'],
-    bodyValue: req.body.thumbnailUrl,
-    removeKey: 'removeThumbnailUrl',
-    currentValue: tip.thumbnailUrl
-  });
+  if (hasTipCoverInput) {
+    mainTipImageUrl = await resolveImageUrl({
+      req,
+      folder: 'safety-tips/covers',
+      fieldNames: ['coverImage', 'cover', 'coverImageFile', 'coverImageUrl'],
+      bodyValue: req.body.coverImageUrl,
+      removeKey: 'removeCoverImageUrl',
+      currentValue: tip.coverImageUrl
+    });
+  } else if (hasTipThumbnailInput) {
+    mainTipImageUrl = await resolveImageUrl({
+      req,
+      folder: 'safety-tips/thumbnails',
+      fieldNames: ['thumbnail', 'thumbnailImage', 'thumbnailImageFile', 'thumbnailUrl'],
+      bodyValue: req.body.thumbnailUrl,
+      removeKey: 'removeThumbnailUrl',
+      currentValue: tip.thumbnailUrl
+    });
+  }
+
+  tip.coverImageUrl = mainTipImageUrl;
+  tip.thumbnailUrl = mainTipImageUrl;
 
   if (req.body.status !== undefined) {
     tip.status = String(req.body.status).trim();
