@@ -5,9 +5,17 @@ import Conversation from '../models/conversation.model.js';
 import {
   requestAiReply,
   requestAiReplyStream,
+  requestAiReplyWithSearch,
   getAiServiceInfo,
   DEFAULT_AI_EMERGENCY_TYPE
 } from '../services/ai.service.js';
+import {
+  shouldConsiderWebSearch,
+  checkWebSearchQuota,
+  recordWebSearch
+} from '../services/webSearch.service.js';
+import { getSetting } from '../services/settings.service.js';
+import User from '../models/user.model.js';
 import { sendSuccess } from '../utils/response.js';
 import { summarizeText } from '../services/security.service.js';
 import { createId } from '../lib/id.js';
@@ -44,6 +52,14 @@ const serializeMessage = (message) => ({
       : null,
   matchedPlaybookId: message.matchedPlaybookId || '',
   routingReason: message.routingReason || '',
+  usedWebSearch: Boolean(message.usedWebSearch),
+  sources: Array.isArray(message.sources)
+    ? message.sources.map((source) => ({
+        title: source.title || '',
+        url: source.url || '',
+        domain: source.domain || ''
+      }))
+    : [],
   createdAt: message.createdAt
 });
 
@@ -168,6 +184,19 @@ const parseChatRequest = async (req) => {
     conversation
   );
 
+  // Fall back to the last location the app reported, so "and tomorrow?" still
+  // knows where "here" is without the client resending it every message.
+  const location =
+    parseLocationInput(req.body) ||
+    (req.auth.user.lastLocation
+      ? {
+          city: req.auth.user.lastLocation.city || '',
+          region: req.auth.user.lastLocation.region || '',
+          country: req.auth.user.lastLocation.country || '',
+          timezone: req.auth.user.lastLocation.timezone || ''
+        }
+      : null);
+
   return {
     requestedLanguage,
     requestedEmergencyType,
@@ -175,6 +204,8 @@ const parseChatRequest = async (req) => {
     message,
     conversation,
     effectiveEmergencyType,
+    location,
+    freshLocation: parseLocationInput(req.body),
     aiQuery: buildAiQuery({
       conversation: conversation?.toObject(),
       latestMessage: message,
@@ -247,13 +278,91 @@ const routingMetadata = (routingDecision) =>
     routingReason: 'OpenAI selected.'
   };
 
-const buildAssistantMessage = ({ content, routingDecision }) => ({
+const buildAssistantMessage = ({
+  content,
+  routingDecision,
+  usedWebSearch = false,
+  sources = []
+}) => ({
   _id: createId('msg'),
   role: 'assistant',
   content,
   ...routingMetadata(routingDecision),
+  usedWebSearch: Boolean(usedWebSearch),
+  sources: Array.isArray(sources) ? sources : [],
   createdAt: new Date()
 });
+
+/**
+ * Reads the coarse location the app may attach to a chat message. Accepts only
+ * city/region/country/timezone - never coordinates, which the web_search tool
+ * cannot use anyway.
+ */
+const parseLocationInput = (body) => {
+  const raw = body?.location || body?.userLocation;
+  if (!raw || typeof raw !== 'object') return null;
+
+  const location = {
+    city: String(raw.city || '').trim(),
+    region: String(raw.region || raw.state || '').trim(),
+    country: String(raw.country || raw.countryCode || '').trim(),
+    timezone: String(raw.timezone || '').trim()
+  };
+
+  return location.city || location.region || location.country ? location : null;
+};
+
+/**
+ * Decides whether this message should be answered with live information.
+ *
+ * Order matters and is all cost control: the cheap checks (master switch,
+ * keyword gate) run before anything that touches the database, so an ordinary
+ * question like "what goes in a 72h kit?" costs one settings-cache read and
+ * nothing else.
+ *
+ * Returns { search: false } to take the existing chat path unchanged, or
+ * { search: true, quota } to take the live path. `limited` means the user
+ * wanted live data but is out of allowance: they still get a normal answer,
+ * and the app shows an upgrade note.
+ */
+const resolveWebSearchDecision = async ({ message, language, user, routingDecision }) => {
+  // A stored playbook is an approved, deterministic answer - never override it.
+  if (routingDecision?.source === ROUTING_SOURCES.STORED) {
+    return { search: false, limited: false };
+  }
+
+  const enabled = await getSetting('webSearchEnabled');
+  if (!enabled) return { search: false, limited: false };
+
+  const wantsLiveInfo = await shouldConsiderWebSearch({ text: message, language });
+  if (!wantsLiveInfo) return { search: false, limited: false };
+
+  const quota = await checkWebSearchQuota(user);
+  if (!quota.allowed) {
+    return { search: false, limited: true, quota };
+  }
+
+  return { search: true, limited: false, quota };
+};
+
+/**
+ * Persists the caller's latest coarse location so follow-up questions keep
+ * their area without the app resending it. Best-effort: never blocks a reply.
+ */
+const rememberLocation = async (userId, location) => {
+  if (!userId || !location) return;
+  try {
+    await User.updateOne(
+      { _id: userId },
+      { $set: { lastLocation: { ...location, updatedAt: new Date() } } }
+    );
+  } catch (error) {
+    console.error(
+      '[chat.controller] failed to store user location:',
+      error?.message || error
+    );
+  }
+};
 
 export const listConversations = catchAsync(async (req, res) => {
   const conversations = await Conversation.find({ userId: req.auth.user._id })
@@ -299,18 +408,56 @@ export const sendChatMessage = catchAsync(async (req, res) => {
     conversation: chat.conversation?.toObject()
   });
 
-  const aiResponse = routingDecision.source === ROUTING_SOURCES.STORED
-    ? {
-        reply: routingDecision.matchedPlaybook.responseTemplate,
-        emergency: true
-      }
-    : await requestAiReply({
+  const webSearchDecision = await resolveWebSearchDecision({
+    message: chat.message,
+    language: chat.requestedLanguage,
+    user: req.auth.user,
+    routingDecision
+  });
+
+  await rememberLocation(req.auth.user._id, chat.freshLocation);
+
+  let aiResponse;
+  if (routingDecision.source === ROUTING_SOURCES.STORED) {
+    aiResponse = {
+      reply: routingDecision.matchedPlaybook.responseTemplate,
+      emergency: true
+    };
+  } else if (webSearchDecision.search) {
+    try {
+      aiResponse = await requestAiReplyWithSearch({
         emergencyType: chat.effectiveEmergencyType,
         language: chat.requestedLanguage,
         query: buildRoutedAiQuery(chat, routingDecision),
         caller: req.auth.user,
-        fallbackReply: routingDecision.matchedPlaybook?.responseTemplate || ''
+        location: chat.location
       });
+
+      if (aiResponse.usedWebSearch) {
+        await recordWebSearch({
+          userId: req.auth.user._id,
+          premium: webSearchDecision.quota?.premium
+        });
+      }
+    } catch (error) {
+      // Live data failed; never let that cost the user an answer.
+      console.error(
+        '[chat.controller] web search path failed, falling back to standard reply:',
+        error?.message || error
+      );
+      aiResponse = null;
+    }
+  }
+
+  if (!aiResponse) {
+    aiResponse = await requestAiReply({
+      emergencyType: chat.effectiveEmergencyType,
+      language: chat.requestedLanguage,
+      query: buildRoutedAiQuery(chat, routingDecision),
+      caller: req.auth.user,
+      fallbackReply: routingDecision.matchedPlaybook?.responseTemplate || ''
+    });
+  }
 
   const conversation = ensureConversationForMessage({
     conversation: chat.conversation,
@@ -330,7 +477,9 @@ export const sendChatMessage = catchAsync(async (req, res) => {
 
   const assistantMessage = buildAssistantMessage({
     content: aiResponse.reply,
-    routingDecision
+    routingDecision,
+    usedWebSearch: aiResponse.usedWebSearch,
+    sources: aiResponse.sources
   });
 
   conversation.messages.push(userMessage, assistantMessage);
@@ -346,6 +495,12 @@ export const sendChatMessage = catchAsync(async (req, res) => {
       aiSource: getAiServiceInfo(),
       degraded: Boolean(aiResponse?.degraded),
       emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
+      usedWebSearch: Boolean(aiResponse?.usedWebSearch),
+      sources: aiResponse?.sources || [],
+      // The user asked for live data but has none left today. They still get a
+      // full answer; the app shows an upgrade note alongside it.
+      liveInfoLimited: Boolean(webSearchDecision.limited),
+      liveInfoLimit: webSearchDecision.quota?.limit ?? null,
       ...routingMetadata(routingDecision)
     }
   });
@@ -382,6 +537,15 @@ export const sendChatMessageStream = async (req, res, next) => {
     });
     const routeMeta = routingMetadata(routingDecision);
 
+    const webSearchDecision = await resolveWebSearchDecision({
+      message: chat.message,
+      language: chat.requestedLanguage,
+      user: req.auth.user,
+      routingDecision
+    });
+
+    await rememberLocation(req.auth.user._id, chat.freshLocation);
+
     setSseHeaders(res);
     writeSseEvent(res, 'meta', {
       conversationId: conversation._id,
@@ -390,10 +554,12 @@ export const sendChatMessageStream = async (req, res, next) => {
       userMessage: serializeMessage(userMessage),
       aiSource: getAiServiceInfo(),
       emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
+      liveInfoLimited: Boolean(webSearchDecision.limited),
+      liveInfoLimit: webSearchDecision.quota?.limit ?? null,
       ...routeMeta
     });
 
-    let aiResponse;
+    let aiResponse = null;
     if (routingDecision.source === ROUTING_SOURCES.STORED) {
       aiResponse = {
         reply: routingDecision.matchedPlaybook.responseTemplate,
@@ -402,7 +568,45 @@ export const sendChatMessageStream = async (req, res, next) => {
       writeSseEvent(res, 'delta', {
         text: routingDecision.matchedPlaybook.responseTemplate
       });
-    } else {
+    } else if (webSearchDecision.search) {
+      let emittedAnyDelta = false;
+      try {
+        aiResponse = await requestAiReplyWithSearch({
+          emergencyType: chat.effectiveEmergencyType,
+          language: chat.requestedLanguage,
+          query: buildRoutedAiQuery(chat, routingDecision),
+          caller: req.auth.user,
+          location: chat.location,
+          onStatus: async (state) => {
+            // Drives the "Checking live information..." indicator in the app.
+            writeSseEvent(res, 'status', { state });
+          },
+          onDelta: async (delta) => {
+            emittedAnyDelta = true;
+            writeSseEvent(res, 'delta', { text: delta });
+          }
+        });
+
+        if (aiResponse.usedWebSearch) {
+          await recordWebSearch({
+            userId: req.auth.user._id,
+            premium: webSearchDecision.quota?.premium
+          });
+        }
+      } catch (error) {
+        console.error(
+          '[chat.controller] streaming web search failed, falling back:',
+          error?.message || error
+        );
+        // Only safe to retry on the ordinary path if the client has not already
+        // started rendering search output; otherwise the answer would duplicate.
+        if (emittedAnyDelta) throw error;
+        writeSseEvent(res, 'status', { state: 'idle' });
+        aiResponse = null;
+      }
+    }
+
+    if (!aiResponse) {
       aiResponse = await requestAiReplyStream({
         emergencyType: chat.effectiveEmergencyType,
         language: chat.requestedLanguage,
@@ -417,7 +621,9 @@ export const sendChatMessageStream = async (req, res, next) => {
 
     const assistantMessage = buildAssistantMessage({
       content: aiResponse.reply,
-      routingDecision
+      routingDecision,
+      usedWebSearch: aiResponse.usedWebSearch,
+      sources: aiResponse.sources
     });
 
     conversation.messages.push(userMessage, assistantMessage);
@@ -432,6 +638,10 @@ export const sendChatMessageStream = async (req, res, next) => {
       aiSource: getAiServiceInfo(),
       degraded: Boolean(aiResponse?.degraded),
       emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
+      usedWebSearch: Boolean(aiResponse?.usedWebSearch),
+      sources: aiResponse?.sources || [],
+      liveInfoLimited: Boolean(webSearchDecision.limited),
+      liveInfoLimit: webSearchDecision.quota?.limit ?? null,
       ...routeMeta
     });
     res.end();

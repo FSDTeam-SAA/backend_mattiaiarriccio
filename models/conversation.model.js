@@ -32,6 +32,26 @@ const conversationMessageSchema = new mongoose.Schema(
       type: String,
       default: ''
     },
+    // True when this answer was produced with the OpenAI web_search tool.
+    usedWebSearch: {
+      type: Boolean,
+      default: false
+    },
+    // Official sources cited by that search. Persisted (rather than derived) so
+    // the source chips survive a history reload.
+    sources: {
+      type: [
+        new mongoose.Schema(
+          {
+            title: { type: String, default: '' },
+            url: { type: String, default: '' },
+            domain: { type: String, default: '' }
+          },
+          { _id: false }
+        )
+      ],
+      default: []
+    },
     createdAt: {
       type: Date,
       default: Date.now

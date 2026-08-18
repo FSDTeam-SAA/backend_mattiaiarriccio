@@ -27,10 +27,19 @@ export const enforceDailyLimit = (kind) => async (req, res, next) => {
     const limit = await getSetting(limitKey);
 
     const today = todayStr();
+    // NOTE: this writes the whole dailyUsage subdocument back, so every counter
+    // living on it must be carried across. webSearches is incremented later in
+    // the request by webSearch.service.js; omitting it here silently reset the
+    // live-search quota on every message.
     const current =
       user.dailyUsage && user.dailyUsage.date === today
-        ? { date: today, messages: user.dailyUsage.messages || 0, chats: user.dailyUsage.chats || 0 }
-        : { date: today, messages: 0, chats: 0 };
+        ? {
+            date: today,
+            messages: user.dailyUsage.messages || 0,
+            chats: user.dailyUsage.chats || 0,
+            webSearches: user.dailyUsage.webSearches || 0
+          }
+        : { date: today, messages: 0, chats: 0, webSearches: 0 };
 
     const used = current[kind] || 0;
 

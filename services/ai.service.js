@@ -3,6 +3,12 @@ import PromptConfig from '../models/promptConfig.model.js';
 import { getSetting } from './settings.service.js';
 import { isPremiumUser } from './premium.service.js';
 import {
+  getAllowedDomains,
+  extractSources,
+  responseUsedWebSearch,
+  buildUserLocation
+} from './webSearch.service.js';
+import {
   defaultWelcomeFor,
   defaultSystemInstructionFor,
   defaultFallbackFor,
@@ -366,6 +372,201 @@ export const requestAiReplyStream = async ({
     await streamFallbackText(fallback.reply, emitDelta);
     return fallback;
   }
+};
+
+/* ------------------------------------------------------------------ *
+ * Live-information path (OpenAI native Web Search)
+ *
+ * Separate from the two functions above because the web_search tool only
+ * exists on the Responses API - Chat Completions cannot call it. Everything
+ * else (prompt resolution, tier caps, offline fallback) is shared.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Builds the system prompt for a live-information answer.
+ *
+ * The tier prompt and the Web Search prompt are CONCATENATED, not swapped:
+ * the tier prompt defines who WeSafe AI is, the Web Search prompt defines what
+ * it does with live results. Sending both is what stops the assistant from
+ * merely relaying what it found online.
+ */
+const buildWebSearchSystemMessage = async ({ language, caller, emergencyType }) => {
+  const lang = normalizeLanguage(language);
+  const [config, promptConfig, webSearchPromptSetting] = await Promise.all([
+    readPromptConfig(lang),
+    resolvePromptConfig(caller),
+    getSetting('webSearchPrompt')
+  ]);
+
+  const baseInstruction = promptConfig.systemPrompt || config.systemInstruction;
+  const webSearchInstruction =
+    (webSearchPromptSetting && webSearchPromptSetting[lang]) ||
+    (webSearchPromptSetting && webSearchPromptSetting.en) ||
+    '';
+
+  const systemMessage = [
+    baseInstruction,
+    '',
+    'LIVE INFORMATION MODE:',
+    webSearchInstruction,
+    '',
+    'SELECTED LANGUAGE:',
+    languageInstructionFor(lang),
+    '',
+    `SELECTED EMERGENCY TYPE: ${normalizeEmergencyType(emergencyType)}`
+  ].join('\n');
+
+  return { systemMessage, maxTokens: promptConfig.maxTokens };
+};
+
+/**
+ * Streams an answer that may consult approved live sources.
+ *
+ * The tool is offered with tool_choice:'auto', so the model can still decide a
+ * search is unnecessary - in which case no search is billed and `usedWebSearch`
+ * comes back false.
+ *
+ * Callers must treat a thrown error as "fall back to the ordinary chat path".
+ * A live-data failure should never cost the user an answer they would otherwise
+ * have received.
+ *
+ * @returns {Promise<{reply, sources, usedWebSearch, raw}>}
+ */
+export const requestAiReplyWithSearch = async ({
+  query,
+  emergencyType,
+  language,
+  caller = null,
+  location = null,
+  onDelta,
+  onStatus
+}) => {
+  const allowedDomains = await getAllowedDomains();
+
+  // No approved sources means no search we are allowed to run. Searching the
+  // open web instead would violate the agreed behaviour, so refuse the path.
+  if (allowedDomains.length === 0) {
+    const error = new Error('No active approved domains are configured');
+    error.code = 'NO_APPROVED_DOMAINS';
+    throw error;
+  }
+
+  const { systemMessage, maxTokens } = await buildWebSearchSystemMessage({
+    language,
+    caller,
+    emergencyType
+  });
+
+  const emitDelta = typeof onDelta === 'function' ? onDelta : async () => {};
+  const emitStatus = typeof onStatus === 'function' ? onStatus : async () => {};
+
+  const contextSize = await getSetting('webSearchContextSize');
+  const userLocation = buildUserLocation(location);
+
+  const tool = {
+    type: 'web_search',
+    filters: { allowed_domains: allowedDomains },
+    search_context_size: contextSize
+  };
+  if (userLocation) {
+    tool.user_location = userLocation;
+  }
+
+  const client = getOpenAIClient();
+  const startedAt = Date.now();
+
+  const stream = await client.responses.create({
+    model: OPENAI_MODEL,
+    input: [
+      { role: 'system', content: systemMessage },
+      { role: 'user', content: String(query || '') }
+    ],
+    tools: [tool],
+    // 'required' rather than 'auto'. By the time we get here the keyword gate
+    // and the quota check have both already decided this question needs live
+    // data, and left to itself gpt-5-mini is unreliable about acting on that:
+    // observed failures were asking the user for permission to check, and
+    // claiming it "cannot access real-time information" while holding the tool.
+    // We supply exactly one tool, so 'required' forces that web search.
+    tool_choice: 'required',
+    include: ['web_search_call.action.sources'],
+    max_output_tokens: maxTokens,
+    // 'minimal' is what the ordinary chat path uses, but OpenAI rejects it
+    // alongside web_search ("tools cannot be used with reasoning.effort
+    // 'minimal'"), so the live path steps up to 'low' - the cheapest effort the
+    // tool actually supports.
+    reasoning: { effort: 'low' },
+    text: { verbosity: 'low' },
+    stream: true
+  });
+
+  let reply = '';
+  let finalResponse = null;
+  let announcedSearching = false;
+
+  for await (const event of stream) {
+    switch (event?.type) {
+      // Both fire around a real search; announce only once so the app shows a
+      // single "Checking live information..." state.
+      case 'response.web_search_call.in_progress':
+      case 'response.web_search_call.searching': {
+        if (!announcedSearching) {
+          announcedSearching = true;
+          await emitStatus('searching');
+        }
+        break;
+      }
+      case 'response.web_search_call.completed': {
+        await emitStatus('searchComplete');
+        break;
+      }
+      case 'response.output_text.delta': {
+        const delta = event.delta || '';
+        if (delta) {
+          reply += delta;
+          await emitDelta(delta);
+        }
+        break;
+      }
+      case 'response.completed': {
+        finalResponse = event.response;
+        break;
+      }
+      case 'response.failed':
+      case 'response.incomplete': {
+        finalResponse = event.response;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  const usedWebSearch = responseUsedWebSearch(finalResponse);
+  const sources = usedWebSearch ? extractSources(finalResponse) : [];
+
+  if (!reply.trim()) {
+    const error = new Error('OpenAI web search returned an empty reply');
+    error.code = 'WEB_SEARCH_EMPTY_REPLY';
+    throw error;
+  }
+
+  console.log(
+    `[ai.service] web search reply ok (model=${finalResponse?.model || OPENAI_MODEL}, ` +
+      `id=${finalResponse?.id || 'n/a'}, ${elapsedMs}ms, ${reply.length} chars, ` +
+      `searched=${usedWebSearch}, sources=${sources.length}, domains=${allowedDomains.length})`
+  );
+
+  return {
+    reply,
+    sources,
+    usedWebSearch,
+    raw: {
+      id: finalResponse?.id || null,
+      model: finalResponse?.model || OPENAI_MODEL
+    }
+  };
 };
 
 export const fetchAiPrompt = async (language = 'en') => {

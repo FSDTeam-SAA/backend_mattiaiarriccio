@@ -24,6 +24,11 @@ import adminMaterialRoutes from './routes/adminMaterial.routes.js';
 import adRoutes from './routes/ad.routes.js';
 import adminAdsRoutes from './routes/adminAds.routes.js';
 import adminSettingsRoutes from './routes/adminSettings.routes.js';
+import {
+  adminApprovedDomainRouter,
+  adminLiveInfoSuggestionRouter,
+  adminWebSearchUsageRouter
+} from './routes/webSearch.routes.js';
 import notFound from './middlewares/notFound.js';
 import globalErrorHandler from './middlewares/globalErrorHandler.js';
 import requestLogger from './middlewares/requestLogger.js';
@@ -104,6 +109,11 @@ app.use('/api/v1/admin/settings/ad-config', adminAdsRoutes);
 
 // Admin app-settings (limits, tier prompts, access rules, toggles)
 app.use('/api/v1/admin/app-settings', adminSettingsRoutes);
+
+// Web Search: approved sources, Live Information shortcuts, usage counters
+app.use('/api/v1/admin/approved-domains', adminApprovedDomainRouter);
+app.use('/api/v1/admin/live-info-suggestions', adminLiveInfoSuggestionRouter);
+app.use('/api/v1/admin/web-search-usage', adminWebSearchUsageRouter);
 
 app.use(notFound);
 app.use(globalErrorHandler);

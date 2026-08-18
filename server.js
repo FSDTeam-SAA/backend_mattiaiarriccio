@@ -3,6 +3,7 @@ import app from './app.js';
 import { connectToDatabase } from './config/db.js';
 import { seedDatabase } from './services/seed.service.js';
 import { seedSettings } from './services/settings.service.js';
+import { seedWebSearchDefaults } from './services/webSearchSeed.service.js';
 import { initScheduler } from './services/scheduler.service.js';
 import { initSocket } from './services/socket.service.js';
 import { verifyEmailTransport } from './services/email.service.js';
@@ -16,6 +17,9 @@ const startServer = async () => {
   await seedDatabase();
   // Ensure all AppSetting keys exist (idempotent, safe on every boot).
   await seedSettings();
+  // Approved sources + Live Information shortcuts. Only fills empty
+  // collections, so admin edits are never overwritten.
+  await seedWebSearchDefaults();
 
   // Reminder/notification scheduler (MongoDB-backed Agenda). Never let a
   // scheduler failure prevent the API from serving requests.

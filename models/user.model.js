@@ -161,11 +161,29 @@ const userSchema = new mongoose.Schema(
         {
           date: { type: String, default: '' },
           messages: { type: Number, default: 0 },
-          chats: { type: Number, default: 0 }
+          chats: { type: Number, default: 0 },
+          webSearches: { type: Number, default: 0 }
         },
         { _id: false }
       ),
-      default: () => ({ date: '', messages: 0, chats: 0 })
+      default: () => ({ date: '', messages: 0, chats: 0, webSearches: 0 })
+    },
+    // Last approximate location the app reported, reused as `user_location` for
+    // web searches so follow-up questions ("and tomorrow?") keep their area
+    // without the app having to resend it on every message. Coarse by design:
+    // city/region/country only, never coordinates.
+    lastLocation: {
+      type: new mongoose.Schema(
+        {
+          city: { type: String, default: '' },
+          region: { type: String, default: '' },
+          country: { type: String, default: '' }, // ISO-3166-1 alpha-2
+          timezone: { type: String, default: '' },
+          updatedAt: { type: Date, default: null }
+        },
+        { _id: false }
+      ),
+      default: null
     }
   },
   {

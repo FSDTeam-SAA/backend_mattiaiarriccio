@@ -19,6 +19,14 @@ import ApiError from '../utils/ApiError.js';
  * - reminderDefaults (object)    : default reminder offsets/channel for materials
  * - notificationsEnabled (true)  : master switch for the reminder/notification engine
  * - chatWelcomeMessage (object)  : { en, it } welcome bubble shown in chat on first open
+ * - webSearchEnabled (true)      : master switch for OpenAI native Web Search
+ * - webSearchFreeDailyLimit (2)  : max live searches/day for free users (0 = unlimited)
+ * - webSearchPremiumDailyLimit (20): max live searches/day for premium users (0 = unlimited)
+ * - webSearchContextSize ('low') : OpenAI search_context_size; the main cost lever
+ * - webSearchPrompt (object)     : { en, it } dedicated prompt controlling how live
+ *                                  results are combined with WeSafe safety guidance
+ * - webSearchTriggers (object)   : { en[], it[] } keywords that make the web_search tool
+ *                                  available. If none match, chat runs exactly as before.
  */
 export const DEFAULT_SETTINGS = {
   freeDailyMessageLimit: 20,
@@ -54,6 +62,76 @@ export const DEFAULT_SETTINGS = {
     channel: 'local'
   },
   notificationsEnabled: true,
+  webSearchEnabled: true,
+  webSearchFreeDailyLimit: 2,
+  webSearchPremiumDailyLimit: 20,
+  webSearchContextSize: 'low',
+  // Dedicated Web Search prompt. Deliberately separate from freePrompt/premiumPrompt:
+  // those define WHO WeSafe is, this defines what it does with live results. Both are
+  // sent together so live data is always wrapped in WeSafe's safety guidance.
+  webSearchPrompt: {
+    en:
+      'You have just retrieved live information from approved official sources.\n\n' +
+      'Never simply repeat what you found. Always combine the verified current ' +
+      'information with WeSafe safety guidance.\n\n' +
+      'If conditions are normal, give the updated information briefly and list the sources.\n\n' +
+      'If you find an official alert or warning, structure the answer exactly like this:\n\n' +
+      '🌤 **Current conditions**\n' +
+      'Updated information from the approved sources.\n\n' +
+      '⚠️ **Active alert**\n' +
+      'Clearly explain the official alert, the affected location and the relevant timeframe.\n\n' +
+      '🛡 **What to do**\n' +
+      '2-5 short, practical safety recommendations specific to this risk.\n\n' +
+      '**Sources**\n' +
+      'The official sources you used.\n\n' +
+      'Rules: never invent alerts, figures or timeframes. If the approved sources do not ' +
+      'confirm something, say so plainly. Stay calm and concrete, never alarmist.\n\n' +
+      'Never ask the user for permission to check, and never offer to look something ' +
+      'up: the search has already run and you are answering with its results. Never ' +
+      'reply with a question instead of an answer. If you found nothing relevant, say ' +
+      'so directly and still give the safety guidance that applies.',
+    it:
+      'Hai appena recuperato informazioni in tempo reale da fonti ufficiali approvate.\n\n' +
+      'Non limitarti mai a ripetere quello che hai trovato. Combina sempre le informazioni ' +
+      'attuali verificate con le indicazioni di sicurezza di WeSafe.\n\n' +
+      'Se le condizioni sono normali, fornisci brevemente le informazioni aggiornate ed elenca le fonti.\n\n' +
+      'Se trovi un avviso o un’allerta ufficiale, struttura la risposta esattamente così:\n\n' +
+      '🌤 **Condizioni attuali**\n' +
+      'Informazioni aggiornate dalle fonti approvate.\n\n' +
+      '⚠️ **Allerta attiva**\n' +
+      'Spiega chiaramente l’allerta ufficiale, la zona interessata e l’arco temporale.\n\n' +
+      '🛡 **Cosa fare**\n' +
+      '2-5 raccomandazioni di sicurezza brevi e pratiche, specifiche per questo rischio.\n\n' +
+      '**Fonti**\n' +
+      'Le fonti ufficiali che hai usato.\n\n' +
+      'Regole: non inventare mai allerte, dati o tempistiche. Se le fonti approvate non ' +
+      'confermano qualcosa, dillo chiaramente. Mantieni un tono calmo e concreto, mai allarmista.\n\n' +
+      'Non chiedere mai il permesso di controllare e non proporti mai di verificare: la ' +
+      'ricerca è già stata eseguita e stai rispondendo con i suoi risultati. Non ' +
+      'rispondere mai con una domanda al posto di una risposta. Se non hai trovato nulla ' +
+      'di rilevante, dillo direttamente e fornisci comunque le indicazioni di sicurezza utili.'
+  },
+  // The cost gate. If nothing here matches the user's message, the web_search tool is
+  // never offered and the request follows the ordinary chat path at no extra cost.
+  webSearchTriggers: {
+    en: [
+      'weather', 'forecast', 'rain', 'storm', 'snow', 'wind', 'temperature',
+      'alert', 'alerts', 'warning', 'warnings', 'emergency alert',
+      'current', 'currently', 'right now', 'today', 'tonight', 'tomorrow',
+      'this week', 'latest', 'news', 'update', 'updates', 'happening',
+      'road closure', 'evacuation', 'earthquake', 'flood', 'wildfire',
+      'is there', 'are there', 'in my area', 'near me'
+    ],
+    it: [
+      'meteo', 'previsioni', 'pioggia', 'temporale', 'neve', 'vento', 'temperatura',
+      'maltempo', 'prossime ore',
+      'allerta', 'allerte', 'avviso', 'avvisi', 'allarme',
+      'attuale', 'attualmente', 'adesso', 'ora', 'oggi', 'stasera', 'domani',
+      'questa settimana', 'ultime', 'notizie', 'aggiornamento', 'aggiornamenti',
+      'in corso', 'tempo reale', 'strada chiusa', 'evacuazione', 'terremoto',
+      'alluvione', 'incendio', 'ci sono', 'nella mia zona', 'vicino a me'
+    ]
+  },
   chatWelcomeMessage: {
     en:
       "Hello 👋\nI'm WeSafe AI, your assistant for safety, emergencies, and preparedness.\n\n" +
@@ -187,6 +265,60 @@ const VALIDATORS = {
   notificationsEnabled: (v) => {
     if (typeof v !== 'boolean') throw 'notificationsEnabled must be a boolean';
     return v;
+  },
+  webSearchEnabled: (v) => {
+    if (typeof v !== 'boolean') throw 'webSearchEnabled must be a boolean';
+    return v;
+  },
+  webSearchFreeDailyLimit: (v) => {
+    if (!isInteger(v) || v < 0)
+      throw 'webSearchFreeDailyLimit must be an integer >= 0 (0 = unlimited)';
+    return v;
+  },
+  webSearchPremiumDailyLimit: (v) => {
+    if (!isInteger(v) || v < 0)
+      throw 'webSearchPremiumDailyLimit must be an integer >= 0 (0 = unlimited)';
+    return v;
+  },
+  webSearchContextSize: (v) => {
+    const allowed = ['low', 'medium', 'high'];
+    if (!allowed.includes(v))
+      throw `webSearchContextSize must be one of: ${allowed.join(', ')}`;
+    return v;
+  },
+  webSearchPrompt: (v) => {
+    if (!isPlainObject(v))
+      throw 'webSearchPrompt must be an object { en: string, it: string }';
+    const result = {};
+    for (const lang of ['en', 'it']) {
+      const incoming = v[lang];
+      if (incoming === undefined) {
+        result[lang] = DEFAULT_SETTINGS.webSearchPrompt[lang];
+        continue;
+      }
+      if (typeof incoming !== 'string' || !incoming.trim())
+        throw `webSearchPrompt.${lang} must be a non-empty string`;
+      result[lang] = incoming;
+    }
+    return result;
+  },
+  webSearchTriggers: (v) => {
+    if (!isPlainObject(v))
+      throw 'webSearchTriggers must be an object { en: string[], it: string[] }';
+    const result = {};
+    for (const lang of ['en', 'it']) {
+      const incoming = v[lang];
+      if (incoming === undefined) {
+        result[lang] = DEFAULT_SETTINGS.webSearchTriggers[lang];
+        continue;
+      }
+      if (!Array.isArray(incoming))
+        throw `webSearchTriggers.${lang} must be an array of strings`;
+      result[lang] = incoming
+        .map((item) => String(item).trim().toLowerCase())
+        .filter(Boolean);
+    }
+    return result;
   },
   chatWelcomeMessage: (v) => {
     if (!isPlainObject(v)) throw 'chatWelcomeMessage must be an object { en: string, it: string }';
