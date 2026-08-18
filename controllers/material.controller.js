@@ -98,7 +98,9 @@ const formatMaterial = (material) => ({
   },
   reminderRules: (material.reminderRules || []).map((rule) => ({
     offsetDays: rule.offsetDays ?? 0,
-    channel: rule.channel || 'local'
+    // Legacy email rules are represented as local reminders until the user
+    // chooses one of the currently supported channels.
+    channel: rule.channel === 'push' ? 'push' : 'local'
   })),
   active: material.active !== false,
   createdAt: material.createdAt,

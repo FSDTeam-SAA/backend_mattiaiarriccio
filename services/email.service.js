@@ -1,6 +1,7 @@
 import { StatusCodes } from 'http-status-codes';
 import nodemailer from 'nodemailer';
 import ApiError from '../utils/ApiError.js';
+import { isEmailNotificationsEnabled } from '../utils/notificationConfig.js';
 
 let cachedTransporter = null;
 
@@ -61,13 +62,19 @@ export const isEmailConfigured = () => {
 export const verifyEmailTransport = async () => {
   if (!isEmailConfigured()) {
     console.warn(
-      '[email.service] SMTP not configured (SMTP_USER / SMTP_PASS missing) — all email is disabled.'
+      '[email.service] SMTP not configured (SMTP_USER / SMTP_PASS missing) — password-reset email is unavailable and notification email is disabled.'
     );
     return false;
   }
   try {
     await getTransporter().verify();
-    console.log('[email.service] SMTP authenticated — email sending is ready.');
+    console.log(
+      `[email.service] SMTP authenticated — ${
+        isEmailNotificationsEnabled()
+          ? 'email sending is ready.'
+          : 'password-reset email is ready; user-facing notification email remains disabled.'
+      }`
+    );
     return true;
   } catch (error) {
     // Reset the cached transporter so a later credential fix is picked up without
@@ -91,6 +98,10 @@ export const verifyEmailTransport = async () => {
  * configuration resolves to { skipped: true } rather than blowing up the loop.
  */
 export const sendReminderEmail = async ({ toEmail, toName, title, body }) => {
+  if (!isEmailNotificationsEnabled()) {
+    return { skipped: true, reason: 'email_notifications_disabled' };
+  }
+
   const destination = String(toEmail || '').trim().toLowerCase();
   if (!destination) {
     return { skipped: true, reason: 'no_recipient' };
@@ -208,4 +219,3 @@ export const sendPasswordResetOtpEmail = async ({ toEmail, otpCode, expiresInMin
     );
   }
 };
-

@@ -9,21 +9,20 @@ import {
   effectiveNotificationEmail,
   NOTIFICATION_PREF_FIELDS
 } from '../utils/notificationPrefs.js';
+import { isEmailNotificationsEnabled } from '../utils/notificationConfig.js';
 
 /**
  * Single entry point for a user-facing notification. It always persists an
- * in-app Notification record, and delivers to the channels the user has
- * enabled: FCM push (when sendPush) AND email (when sendEmail) — so email
- * mirrors push for every notification, gated by the user's per-channel and
- * per-category preferences.
+ * in-app Notification record, and delivers FCM push when requested. Email
+ * notification delivery is retained only as a guarded compatibility path and
+ * is disabled by default until a WeSafe-owned sender is configured.
  *
- * `sendEmail` defaults on. Callers that ALREADY enqueue a dedicated email job
- * for the same notification (checklist item reminders, admin campaigns, premium
- * lifecycle events) must pass `sendEmail: false` so the user is not emailed
- * twice — the separate email job handles their email.
+ * `sendEmail` is retained for future re-enablement. Callers that already
+ * enqueue a dedicated email job must still pass `sendEmail: false` to avoid
+ * duplicate delivery when the channel returns.
  *
  * Never throws: a failure to persist the in-app record is logged but delivery
- * is still attempted, and both sendToUser and sendReminderEmail are best-effort.
+ * is still attempted, and push/email delivery is best-effort.
  *
  * The created record's id is forwarded in the push data as notificationId so a
  * tap can later mark it read or open it.
@@ -78,11 +77,9 @@ export const notifyUser = async (
           ttlMs
         });
 
-  // Email mirrors push: deliver the same notification by email when the user has
-  // email enabled for this notification's category. Best-effort and never
-  // throws. `email_suppressed` means the caller owns email via a separate job.
+  // Compatibility email path: disabled unless the explicit feature flag is on.
   let emailResult = { skipped: true, reason: 'email_suppressed' };
-  if (sendEmail !== false) {
+  if (sendEmail !== false && isEmailNotificationsEnabled()) {
     try {
       const user = await User.findById(userId)
         .select(`${NOTIFICATION_PREF_FIELDS} email notificationEmail fullName`)
@@ -104,6 +101,8 @@ export const notifyUser = async (
         error: error?.message || String(error)
       };
     }
+  } else if (sendEmail !== false) {
+    emailResult = { skipped: true, reason: 'email_notifications_disabled' };
   }
 
   // Push fields stay at the top level for backwards compatibility (callers

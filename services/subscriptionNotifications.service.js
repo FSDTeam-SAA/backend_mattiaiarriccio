@@ -17,7 +17,7 @@ import { createId } from '../lib/id.js';
 import { renderNotificationContent } from './notificationContent.service.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const DEFAULT_CHANNELS = ['push', 'email'];
+const DEFAULT_CHANNELS = ['push'];
 const EXPIRY_OFFSET_DAYS = [7, 3, 1, 0];
 // Only materialize a reminder job once its fire time is within this window, so a
 // daily scan tops up near-term reminders rather than piling far-future jobs.

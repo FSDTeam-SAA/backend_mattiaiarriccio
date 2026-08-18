@@ -4,10 +4,7 @@ import { createId } from '../lib/id.js';
 import { getSetting } from './settings.service.js';
 import { notifyUser } from './notify.service.js';
 import { sendToUser } from './push.service.js';
-import { sendReminderEmail } from './email.service.js';
 import {
-  effectiveNotificationEmail,
-  emailEnabledForType,
   pushEnabledForType,
   NOTIFICATION_PREF_FIELDS
 } from '../utils/notificationPrefs.js';
@@ -16,9 +13,9 @@ import { reminderInstantFor, reminderPrefsOf } from '../utils/reminderTime.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-// 'local' is scheduled on-device by the Flutter client; 'push' and 'email' are
-// delivered by dispatchDueJobs.
-const MATERIAL_CHANNELS = new Set(['local', 'push', 'email']);
+// 'local' is scheduled on-device by the Flutter client; 'push' is delivered by
+// dispatchDueJobs. User-facing email notifications are disabled for this phase.
+const MATERIAL_CHANNELS = new Set(['local', 'push']);
 
 /**
  * Reminder delivery time for a user, defaulted when the user can't be loaded.
@@ -170,7 +167,7 @@ export const cancelForMaterial = async (materialId) => {
 // ---------------------------------------------------------------------------
 //
 // A checklist item carries: { reminderEnabled, reminderDaysBefore,
-// expirationDate, notificationPreferences:{ push, email }, completed }.
+// expirationDate, notificationPreferences:{ push }, completed }.
 // We schedule one job per enabled channel, fired `reminderDaysBefore` days
 // before the item's expiration date. Completed items never get reminders.
 // Jobs are keyed by refId = item._id so a re-sync cleanly replaces them.
@@ -204,11 +201,10 @@ const checklistItemReminderJobs = ({
   const prefs = item.notificationPreferences || {};
   const channels = [];
   if (prefs.push) channels.push('push');
-  if (prefs.email) channels.push('email');
-  // Honor the user's channel choices exactly: push off => no push job, email
-  // off => no email job. With neither channel selected there is nothing to
-  // deliver, so no job is scheduled. The app keeps at least one channel on
-  // while a reminder is enabled, so this only no-ops on a deliberate opt-out.
+  // Email notification delivery is disabled for this phase. Existing legacy
+  // email preferences are intentionally ignored when jobs are rebuilt.
+  // With no push channel selected there is nothing to deliver, so no job is
+  // scheduled. The app keeps push on while a reminder is enabled.
   if (channels.length === 0) return jobs;
 
   // English fallback (also what admin history renders); the dispatcher localizes
@@ -349,7 +345,7 @@ export const cancelForChecklistItems = async (userId, itemIds = []) => {
   return { deletedCount: result.deletedCount || 0 };
 };
 
-// Default retry policy for transient push/email failures. Backoff is indexed by
+// Default retry policy for transient push failures. Backoff is indexed by
 // attempt number (attempt 1 waits 2 min, attempt 2 waits 10 min, ...). A job is
 // marked 'failed' only after maxAttempts transient failures.
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -447,10 +443,10 @@ const markSkipped = async (claimed, note) => {
  * - Skips entirely when the global notificationsEnabled setting is false.
  * - For each due job, atomically flips pending -> sent BEFORE dispatch using a
  *   status:'pending' guard so two overlapping ticks can never double-send.
- * - channel 'push' -> notifyUser (in-app record + FCM); 'email' -> sendReminderEmail;
+ * - channel 'push' -> notifyUser (in-app record + FCM);
  *   'local' -> mark sent (the Flutter client schedules its own local notification).
- * - Per-user delivery honours notificationEmail + receive*Notifications prefs.
- * - Transient push/email errors are retried with backoff (see scheduleRetryOrFail);
+ * - Per-user delivery honours receivePushNotifications + category prefs.
+ * - Transient push errors are retried with backoff (see scheduleRetryOrFail);
  *   the loop never throws.
  */
 export const dispatchDueJobs = async () => {
@@ -518,15 +514,6 @@ export const dispatchDueJobs = async () => {
               })
             : { skipped: true, reason: 'push_disabled' };
         } else {
-          // Email mirrors push via notifyUser, EXCEPT for job families that
-          // already enqueue their own dedicated email job (checklist items,
-          // premium lifecycle, admin campaigns) — those must not be emailed
-          // twice. Material reminders are push-only, so they mirror email here.
-          const managesEmailSeparately =
-            claimed.type === 'checklist_item' ||
-            claimed.type === 'premium' ||
-            claimed.type === 'premium_expiry' ||
-            Boolean(claimed.campaignId);
           result = await notifyUser(claimed.userId, {
             title,
             body,
@@ -534,7 +521,7 @@ export const dispatchDueJobs = async () => {
             data,
             ttlMs: 12 * 60 * 60 * 1000,
             sendPush: pushAllowed,
-            sendEmail: !managesEmailSeparately
+            sendEmail: false
           });
         }
         // A transient FCM error is retryable. For a push-only backup job
@@ -558,42 +545,13 @@ export const dispatchDueJobs = async () => {
           continue;
         }
       } else if (claimed.channel === 'email') {
-        const user = await User.findById(claimed.userId)
-          .select(
-            `email fullName notificationEmail ${NOTIFICATION_PREF_FIELDS} preferredLanguage`
-          )
-          .lean();
-
-        // Respect a per-user / per-category opt-out without failing the job.
-        if (!emailEnabledForType(user, claimed.type)) {
-          await markSkipped(claimed, 'email skipped: user opted out');
-          skipped += 1;
-          continue;
-        }
-
-        const { title, body } = localizedContentFor(claimed, user?.preferredLanguage);
-        const result = await sendReminderEmail({
-          toEmail: effectiveNotificationEmail(user),
-          toName: user?.fullName,
-          title,
-          body
-        });
-        // A transient SMTP error is retryable; config/recipient skips are recorded.
-        if (result?.skipped && result.reason === 'error') {
-          const outcome = await scheduleRetryOrFail(
-            claimed,
-            `email error: ${result.error || 'unknown'}`
-          );
-          outcome === 'failed' ? (failed += 1) : (retried += 1);
-          continue;
-        }
-        if (result?.skipped) {
-          await markSkipped(claimed, `email skipped: ${result.reason || 'unknown'}`);
-          skipped += 1;
-          continue;
-        }
+        // Legacy jobs may still exist in MongoDB from before email was removed.
+        // Claim and close them without touching SMTP so they can never send.
+        await markSkipped(claimed, 'email notifications disabled for this phase');
+        skipped += 1;
+        continue;
       }
-      // Delivered (push/email) or a 'local' job (client-scheduled): count as sent.
+      // Delivered (push) or a 'local' job (client-scheduled): count as sent.
       sent += 1;
     } catch (error) {
       const outcome = await scheduleRetryOrFail(claimed, error?.message || error);

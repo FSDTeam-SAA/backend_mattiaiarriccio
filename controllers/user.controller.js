@@ -41,6 +41,7 @@ import {
 import { resolveImageUrl } from '../services/media.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { publicUser } from '../utils/serializers.js';
+import { isEmailNotificationsEnabled } from '../utils/notificationConfig.js';
 
 const getProvidedUserName = (body = {}) => {
   for (const key of ['username', 'userName', 'fullName', 'firstName']) {
@@ -208,7 +209,8 @@ const notificationSettingsPayload = (user) => ({
     .trim()
     .toLowerCase(),
   notificationEmailVerified: Boolean(user.notificationEmailVerified),
-  receiveEmailNotifications: user.receiveEmailNotifications !== false,
+  receiveEmailNotifications:
+    isEmailNotificationsEnabled() && user.receiveEmailNotifications !== false,
   receivePushNotifications: user.receivePushNotifications !== false,
   notificationsEnabled: user.notificationsEnabled !== false,
   // Per-category opt-in (default on).
@@ -262,7 +264,9 @@ export const updateNotificationSettings = catchAsync(async (req, res) => {
   }
 
   if (req.body.receiveEmailNotifications !== undefined) {
-    user.receiveEmailNotifications = Boolean(req.body.receiveEmailNotifications);
+    // Keep the persisted value aligned with the current product phase. This
+    // prevents an old client from re-enabling a channel that is not delivered.
+    user.receiveEmailNotifications = false;
   }
 
   if (req.body.receivePushNotifications !== undefined) {

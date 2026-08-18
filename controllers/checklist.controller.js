@@ -76,7 +76,9 @@ const normalizeNotificationPreferences = (value = {}) => {
   const prefs = parseMaybeJson(value);
   return {
     push: prefs.push === undefined ? true : parseBoolean(prefs.push, true),
-    email: prefs.email === undefined ? false : parseBoolean(prefs.email, false)
+    // Email notification delivery is disabled for this phase. Keep the field
+    // in the response for older clients, but always expose it as off.
+    email: false
   };
 };
 

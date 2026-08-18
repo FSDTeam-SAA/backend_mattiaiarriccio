@@ -63,7 +63,9 @@ const parseOptionalDate = (value) => {
 
 const normalizeNotificationPreferences = (value = {}) => ({
   push: value.push === undefined ? true : Boolean(value.push),
-  email: value.email === undefined ? false : Boolean(value.email)
+  // Email notification delivery is disabled for this phase. Keep the field
+  // for legacy dashboard payloads, but always expose it as off.
+  email: false
 });
 
 const mapItemDetails = (item = {}) => ({

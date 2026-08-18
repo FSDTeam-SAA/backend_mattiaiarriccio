@@ -23,7 +23,7 @@ const VALID_TYPES = new Set([
   'custom'
 ]);
 const VALID_CHANNELS = new Set(['push', 'local', 'email']);
-const ADMIN_SEND_CHANNELS = new Set(['push', 'email']);
+const ADMIN_SEND_CHANNELS = new Set(['push']);
 const AUDIENCE_TYPES = new Set(['all', 'free', 'premium', 'category', 'specific']);
 
 const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

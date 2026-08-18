@@ -8,6 +8,8 @@
  *  - Email is delivered to `notificationEmail` when set, else the account email.
  */
 
+import { isEmailNotificationsEnabled } from './notificationConfig.js';
+
 /** The address reminder/notification emails are sent to. */
 export const effectiveNotificationEmail = (user) =>
   String(user?.notificationEmail || user?.email || '')
@@ -20,7 +22,9 @@ export const pushEnabledForUser = (user) =>
 
 /** True when email may be delivered to this user. */
 export const emailEnabledForUser = (user) =>
-  user?.notificationsEnabled !== false && user?.receiveEmailNotifications !== false;
+  isEmailNotificationsEnabled() &&
+  user?.notificationsEnabled !== false &&
+  user?.receiveEmailNotifications !== false;
 
 /**
  * Maps a notification `type` to one of the four user-facing preference
