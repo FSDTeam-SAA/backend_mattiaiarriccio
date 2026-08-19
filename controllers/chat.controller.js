@@ -328,21 +328,54 @@ const parseLocationInput = (body) => {
 const resolveWebSearchDecision = async ({ message, language, user, routingDecision }) => {
   // A stored playbook is an approved, deterministic answer - never override it.
   if (routingDecision?.source === ROUTING_SOURCES.STORED) {
-    return { search: false, limited: false };
+    return { search: false, limited: false, reason: 'stored-playbook-matched' };
   }
 
   const enabled = await getSetting('webSearchEnabled');
-  if (!enabled) return { search: false, limited: false };
+  if (!enabled) {
+    return { search: false, limited: false, reason: 'webSearchEnabled=false' };
+  }
 
   const wantsLiveInfo = await shouldConsiderWebSearch({ text: message, language });
-  if (!wantsLiveInfo) return { search: false, limited: false };
+  if (!wantsLiveInfo) {
+    return { search: false, limited: false, reason: 'no-trigger-keyword-matched' };
+  }
 
   const quota = await checkWebSearchQuota(user);
   if (!quota.allowed) {
-    return { search: false, limited: true, quota };
+    return {
+      search: false,
+      limited: true,
+      quota,
+      reason: `daily-quota-exhausted (${quota.used}/${quota.limit})`
+    };
   }
 
-  return { search: true, limited: false, quota };
+  return { search: true, limited: false, quota, reason: 'live-path-selected' };
+};
+
+/**
+ * One line per message recording which gate decided the live path.
+ *
+ * Every skip above is silent to the user by design, and the failure modes are
+ * indistinguishable from the outside: an admin toggle, a keyword miss, an empty
+ * approved-domain list and a spent quota all produce the same ordinary answer.
+ * This is the only place that tells them apart in production logs.
+ */
+const logWebSearchDecision = ({ decision, message, language, hasLocation }) => {
+  const preview = String(message || '').slice(0, 60).replace(/\s+/g, ' ');
+  console.log(
+    `[webSearch] ${decision.search ? 'SEARCH' : 'SKIP'} ` +
+      `reason=${decision.reason || 'unknown'} lang=${language} ` +
+      `location=${hasLocation ? 'yes' : 'none'} ` +
+      `quota=${
+        decision.quota
+          ? `${decision.quota.used}/${
+              decision.quota.unlimited ? '∞' : decision.quota.limit
+            }${decision.quota.premium ? ' premium' : ' free'}`
+          : 'n/a'
+      } msg="${preview}"`
+  );
 };
 
 /**
@@ -413,6 +446,12 @@ export const sendChatMessage = catchAsync(async (req, res) => {
     language: chat.requestedLanguage,
     user: req.auth.user,
     routingDecision
+  });
+  logWebSearchDecision({
+    decision: webSearchDecision,
+    message: chat.message,
+    language: chat.requestedLanguage,
+    hasLocation: Boolean(chat.location)
   });
 
   await rememberLocation(req.auth.user._id, chat.freshLocation);
@@ -497,6 +536,9 @@ export const sendChatMessage = catchAsync(async (req, res) => {
       emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
       usedWebSearch: Boolean(aiResponse?.usedWebSearch),
       sources: aiResponse?.sources || [],
+      // What the model actually searched for. Not persisted on the message -
+      // this is transparency for the answer being delivered right now.
+      searchQueries: aiResponse?.searchQueries || [],
       // The user asked for live data but has none left today. They still get a
       // full answer; the app shows an upgrade note alongside it.
       liveInfoLimited: Boolean(webSearchDecision.limited),
@@ -543,6 +585,12 @@ export const sendChatMessageStream = async (req, res, next) => {
       user: req.auth.user,
       routingDecision
     });
+    logWebSearchDecision({
+      decision: webSearchDecision,
+      message: chat.message,
+      language: chat.requestedLanguage,
+      hasLocation: Boolean(chat.location)
+    });
 
     await rememberLocation(req.auth.user._id, chat.freshLocation);
 
@@ -577,9 +625,11 @@ export const sendChatMessageStream = async (req, res, next) => {
           query: buildRoutedAiQuery(chat, routingDecision),
           caller: req.auth.user,
           location: chat.location,
-          onStatus: async (state) => {
-            // Drives the "Checking live information..." indicator in the app.
-            writeSseEvent(res, 'status', { state });
+          onStatus: async (state, detail = {}) => {
+            // Drives the live-search indicator in the app. `queries` is what
+            // the model actually searched for, shown so the user can see the
+            // lookup happening rather than staring at an unexplained spinner.
+            writeSseEvent(res, 'status', { state, ...detail });
           },
           onDelta: async (delta) => {
             emittedAnyDelta = true;
@@ -595,13 +645,18 @@ export const sendChatMessageStream = async (req, res, next) => {
         }
       } catch (error) {
         console.error(
-          '[chat.controller] streaming web search failed, falling back:',
+          `[chat.controller] streaming web search failed (code=${
+            error?.code || 'n/a'
+          }), falling back to the ordinary chat path:`,
           error?.message || error
         );
         // Only safe to retry on the ordinary path if the client has not already
         // started rendering search output; otherwise the answer would duplicate.
         if (emittedAnyDelta) throw error;
-        writeSseEvent(res, 'status', { state: 'idle' });
+        // 'unavailable' rather than 'idle': the user asked for live data and is
+        // about to get an answer without it, and silently swapping the spinner
+        // back is what made this failure invisible in the first place.
+        writeSseEvent(res, 'status', { state: 'unavailable' });
         aiResponse = null;
       }
     }
@@ -640,6 +695,9 @@ export const sendChatMessageStream = async (req, res, next) => {
       emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
       usedWebSearch: Boolean(aiResponse?.usedWebSearch),
       sources: aiResponse?.sources || [],
+      // What the model actually searched for. Not persisted on the message -
+      // this is transparency for the answer being delivered right now.
+      searchQueries: aiResponse?.searchQueries || [],
       liveInfoLimited: Boolean(webSearchDecision.limited),
       liveInfoLimit: webSearchDecision.quota?.limit ?? null,
       ...routeMeta

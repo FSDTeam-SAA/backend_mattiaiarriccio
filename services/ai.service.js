@@ -26,6 +26,22 @@ export const DEFAULT_AI_EMERGENCY_TYPE = 'General Emergency';
 const FREE_MAX_TOKENS = 600;
 const PREMIUM_MAX_TOKENS = 1500;
 
+/**
+ * Floor for max_output_tokens on the live-information path only.
+ *
+ * On the Responses API reasoning tokens are billed against max_output_tokens
+ * alongside the visible answer. A web_search turn at reasoning effort 'low'
+ * routinely spends several hundred tokens before emitting a single visible
+ * character, so the free tier's 600-token budget can be consumed entirely by
+ * reasoning: the response comes back `incomplete`, the reply is empty, this
+ * module throws, and the caller silently falls back to the ordinary chat path -
+ * which is exactly the "I can't access real-time information" answer users see.
+ *
+ * The tier caps above still apply unchanged to the ordinary chat path, where
+ * reasoning effort is 'minimal' and the budget is all answer.
+ */
+const WEB_SEARCH_MIN_OUTPUT_TOKENS = 2000;
+
 let openaiClient = null;
 let warnedMissingKey = false;
 
@@ -420,6 +436,44 @@ const buildWebSearchSystemMessage = async ({ language, caller, emergencyType }) 
 };
 
 /**
+ * Turns a terminal Responses object into one diagnosable log line.
+ *
+ * An empty live answer has several very different causes - the budget ran out
+ * during reasoning, the model refused, the upstream call failed - and they are
+ * only distinguishable from `status`, `incomplete_details.reason` and the token
+ * usage split. Without them the failure is indistinguishable from "OpenAI was
+ * slow", which is what made this path so hard to diagnose in production.
+ */
+const describeTerminalResponse = (response) => {
+  if (!response) {
+    return 'no terminal response event arrived (stream ended early or the connection dropped)';
+  }
+
+  const parts = [`status=${response.status || 'unknown'}`];
+
+  const reason = response.incomplete_details?.reason;
+  if (reason) parts.push(`incompleteReason=${reason}`);
+
+  const errorText = [response.error?.code, response.error?.message]
+    .filter(Boolean)
+    .join(': ');
+  if (errorText) parts.push(`error="${errorText}"`);
+
+  const usage = response.usage;
+  if (usage) {
+    const reasoningTokens = usage.output_tokens_details?.reasoning_tokens;
+    parts.push(
+      `outputTokens=${usage.output_tokens ?? 'n/a'}` +
+        (reasoningTokens === undefined
+          ? ''
+          : ` (reasoning=${reasoningTokens})`)
+    );
+  }
+
+  return parts.join(' ');
+};
+
+/**
  * Streams an answer that may consult approved live sources.
  *
  * The tool is offered with tool_choice:'auto', so the model can still decide a
@@ -475,6 +529,10 @@ export const requestAiReplyWithSearch = async ({
   const client = getOpenAIClient();
   const startedAt = Date.now();
 
+  // See WEB_SEARCH_MIN_OUTPUT_TOKENS: this budget covers reasoning tokens too,
+  // so the tier cap alone is not enough to get a visible answer out.
+  const outputTokenBudget = Math.max(maxTokens, WEB_SEARCH_MIN_OUTPUT_TOKENS);
+
   const stream = await client.responses.create({
     model: OPENAI_MODEL,
     input: [
@@ -490,7 +548,7 @@ export const requestAiReplyWithSearch = async ({
     // We supply exactly one tool, so 'required' forces that web search.
     tool_choice: 'required',
     include: ['web_search_call.action.sources'],
-    max_output_tokens: maxTokens,
+    max_output_tokens: outputTokenBudget,
     // 'minimal' is what the ordinary chat path uses, but OpenAI rejects it
     // alongside web_search ("tools cannot be used with reasoning.effort
     // 'minimal'"), so the live path steps up to 'low' - the cheapest effort the
@@ -504,6 +562,30 @@ export const requestAiReplyWithSearch = async ({
   let finalResponse = null;
   let announcedSearching = false;
 
+  // What the model actually typed into the search box. Shown in the app so the
+  // user can see the search happening rather than just waiting on a spinner.
+  const searchQueries = [];
+  const collectQueries = (item) => {
+    const action = item?.action;
+    if (!action) return false;
+
+    const found = Array.isArray(action.queries)
+      ? action.queries
+      : action.query
+        ? [action.query]
+        : [];
+
+    let added = false;
+    for (const raw of found) {
+      const text = String(raw || '').trim();
+      if (text && !searchQueries.includes(text)) {
+        searchQueries.push(text);
+        added = true;
+      }
+    }
+    return added;
+  };
+
   for await (const event of stream) {
     switch (event?.type) {
       // Both fire around a real search; announce only once so the app shows a
@@ -512,12 +594,29 @@ export const requestAiReplyWithSearch = async ({
       case 'response.web_search_call.searching': {
         if (!announcedSearching) {
           announcedSearching = true;
-          await emitStatus('searching');
+          await emitStatus('searching', { domains: allowedDomains.length });
         }
         break;
       }
       case 'response.web_search_call.completed': {
-        await emitStatus('searchComplete');
+        await emitStatus('searchComplete', {
+          queries: [...searchQueries],
+          domains: allowedDomains.length
+        });
+        break;
+      }
+      // The completed item carries the queries and the consulted sources, which
+      // the `.completed` event above does not. It arrives just after it, so this
+      // re-emits the same state with the detail filled in; the app merges rather
+      // than replaces, which makes the double emit harmless.
+      case 'response.output_item.done': {
+        if (event.item?.type !== 'web_search_call') break;
+        if (collectQueries(event.item)) {
+          await emitStatus('searchComplete', {
+            queries: [...searchQueries],
+            domains: allowedDomains.length
+          });
+        }
         break;
       }
       case 'response.output_text.delta': {
@@ -545,23 +644,62 @@ export const requestAiReplyWithSearch = async ({
   const elapsedMs = Date.now() - startedAt;
   const usedWebSearch = responseUsedWebSearch(finalResponse);
   const sources = usedWebSearch ? extractSources(finalResponse) : [];
+  const incompleteReason = finalResponse?.incomplete_details?.reason || '';
 
   if (!reply.trim()) {
-    const error = new Error('OpenAI web search returned an empty reply');
+    const diagnosis = describeTerminalResponse(finalResponse);
+
+    // Without this line the only trace of a failed live answer is the caller's
+    // generic "falling back to standard reply", which says nothing about why.
+    console.error(
+      `[ai.service] web search produced no text in ${elapsedMs}ms; the caller will ` +
+        `fall back to the ordinary chat path.\n` +
+        `  ${diagnosis}\n` +
+        `  model:   ${finalResponse?.model || OPENAI_MODEL}\n` +
+        `  budget:  ${outputTokenBudget} max_output_tokens\n` +
+        `  searched:${usedWebSearch} domains=${allowedDomains.length}` +
+        (incompleteReason === 'max_output_tokens'
+          ? '\n  hint:    the whole budget went to reasoning before any visible text. ' +
+            'Raise WEB_SEARCH_MIN_OUTPUT_TOKENS in this file.'
+          : '')
+    );
+
+    const error = new Error(
+      `OpenAI web search returned an empty reply (${diagnosis})`
+    );
     error.code = 'WEB_SEARCH_EMPTY_REPLY';
     throw error;
+  }
+
+  // tool_choice is 'required', so this should be unreachable. If it ever fires,
+  // the model answered from memory and the answer is not actually live data.
+  if (!usedWebSearch) {
+    console.warn(
+      `[ai.service] web search path answered WITHOUT searching despite ` +
+        `tool_choice:'required' (model=${finalResponse?.model || OPENAI_MODEL}, ` +
+        `id=${finalResponse?.id || 'n/a'}). The answer is not live data.`
+    );
+  }
+
+  if (incompleteReason) {
+    console.warn(
+      `[ai.service] web search reply was truncated (reason=${incompleteReason}, ` +
+        `budget=${outputTokenBudget}). Consider raising the output budget.`
+    );
   }
 
   console.log(
     `[ai.service] web search reply ok (model=${finalResponse?.model || OPENAI_MODEL}, ` +
       `id=${finalResponse?.id || 'n/a'}, ${elapsedMs}ms, ${reply.length} chars, ` +
-      `searched=${usedWebSearch}, sources=${sources.length}, domains=${allowedDomains.length})`
+      `searched=${usedWebSearch}, queries=${searchQueries.length}, ` +
+      `sources=${sources.length}, domains=${allowedDomains.length})`
   );
 
   return {
     reply,
     sources,
     usedWebSearch,
+    searchQueries: [...searchQueries],
     raw: {
       id: finalResponse?.id || null,
       model: finalResponse?.model || OPENAI_MODEL
