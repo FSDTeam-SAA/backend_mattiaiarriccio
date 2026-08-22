@@ -14,6 +14,12 @@ import {
   checkWebSearchQuota,
   recordWebSearch
 } from '../services/webSearch.service.js';
+import {
+  detectWeatherIntent,
+  extractRequestedPlace,
+  getWeatherSnapshot,
+  formatWeatherContext
+} from '../services/weather.service.js';
 import { getSetting } from '../services/settings.service.js';
 import User from '../models/user.model.js';
 import { sendSuccess } from '../utils/response.js';
@@ -60,6 +66,7 @@ const serializeMessage = (message) => ({
         domain: source.domain || ''
       }))
     : [],
+  weather: message.weather || null,
   createdAt: message.createdAt
 });
 
@@ -282,7 +289,8 @@ const buildAssistantMessage = ({
   content,
   routingDecision,
   usedWebSearch = false,
-  sources = []
+  sources = [],
+  weather = null
 }) => ({
   _id: createId('msg'),
   role: 'assistant',
@@ -290,6 +298,7 @@ const buildAssistantMessage = ({
   ...routingMetadata(routingDecision),
   usedWebSearch: Boolean(usedWebSearch),
   sources: Array.isArray(sources) ? sources : [],
+  weather: weather || null,
   createdAt: new Date()
 });
 
@@ -397,6 +406,95 @@ const rememberLocation = async (userId, location) => {
   }
 };
 
+/**
+ * Resolves measured weather for this message, if it is asking for any.
+ *
+ * Deliberately independent of resolveWebSearchDecision. The approved-domain
+ * search answers "is there an alert" well and "what is the temperature" not at
+ * all, because those sites publish maps and PDFs rather than readable figures -
+ * which is why weather questions used to come back as "go and check the
+ * Bollettino yourself", and as a flat refusal for anyone outside Italy. Numbers
+ * now come from the weather provider; the approved sources keep the alerts.
+ *
+ * It is also NOT charged against the live-search quota: the provider is free,
+ * so a user out of allowance still gets real conditions.
+ *
+ * Returns `needsLocation` when the question needs a place and we have none.
+ * That case is a UI affordance in the app, not a paragraph of apology.
+ */
+const resolveWeather = async ({ message, language, location }) => {
+  if (!detectWeatherIntent(message)) {
+    return { snapshot: null, needsLocation: false, asked: false };
+  }
+
+  // A place named in the question outranks the device's own: "weather in
+  // Italy" asked from Dhaka must not be answered with Dhaka's conditions.
+  // If it does not geocode it was not a place, and the device location below
+  // still answers the question.
+  const requestedPlace = extractRequestedPlace(message);
+  if (requestedPlace) {
+    const snapshot = await getWeatherSnapshot({
+      location: { city: requestedPlace },
+      language
+    });
+    if (snapshot) {
+      return { snapshot, needsLocation: false, asked: true, requestedPlace };
+    }
+  }
+
+  if (!location) {
+    // Asking for a location the user did not want to talk about would be a
+    // non-sequitur, so the prompt is only offered when the question was about
+    // where they are.
+    return {
+      snapshot: null,
+      needsLocation: !requestedPlace,
+      asked: true,
+      requestedPlace
+    };
+  }
+
+  const snapshot = await getWeatherSnapshot({ location, language });
+  return { snapshot, needsLocation: false, asked: true, requestedPlace };
+};
+
+/**
+ * What the model is told when a weather question arrives without a location.
+ *
+ * Without this the model writes several paragraphs explaining which national
+ * weather service to visit - the second screenshot in the bug report. The app
+ * shows a one-tap "use my location" action instead, so the text only has to be
+ * one honest line.
+ */
+const locationPromptContext = (language) =>
+  language === 'it'
+    ? 'CONTESTO METEO: l\'utente chiede le condizioni attuali ma la sua posizione non e ' +
+      'disponibile. L\'app mostra gia un pulsante per condividere la posizione. ' +
+      'Rispondi con UNA sola riga breve che dice che ti serve la posizione, poi fermati. ' +
+      'Non elencare siti meteo, non dare istruzioni passo passo, non scusarti a lungo.'
+    : 'WEATHER CONTEXT: the user is asking for current conditions but their location is ' +
+      'not available. The app already shows a one-tap button to share it. Reply with ONE ' +
+      'short line saying you need their location, then stop. Do not list weather websites, ' +
+      'do not give step-by-step instructions, do not write a long apology.';
+
+/** The system-prompt block for this turn: real figures, or the ask for a place. */
+const buildWeatherContext = (weather, language) => {
+  if (weather.snapshot) return formatWeatherContext(weather.snapshot, language);
+  if (weather.needsLocation) return locationPromptContext(language);
+  return '';
+};
+
+/** One line per weather-intent message, so a missing card is diagnosable. */
+const logWeatherDecision = ({ weather, location }) => {
+  if (!weather.asked) return;
+  console.log(
+    `[weather] ${weather.snapshot ? 'DATA' : weather.needsLocation ? 'NO-LOCATION' : 'LOOKUP-FAILED'} ` +
+      `place="${weather.requestedPlace || location?.city || location?.region || location?.country || 'n/a'}" ` +
+      `${weather.requestedPlace ? 'from=message ' : ''}` +
+      `flags=${weather.snapshot?.safetyFlags?.join(',') || 'none'}`
+  );
+};
+
 export const listConversations = catchAsync(async (req, res) => {
   const conversations = await Conversation.find({ userId: req.auth.user._id })
     .sort({ updatedAt: -1 })
@@ -456,6 +554,16 @@ export const sendChatMessage = catchAsync(async (req, res) => {
 
   await rememberLocation(req.auth.user._id, chat.freshLocation);
 
+  // Resolved before any AI call so the model answers with the figures in hand
+  // rather than hedging about not being able to reach them.
+  const weather = await resolveWeather({
+    message: chat.message,
+    language: chat.requestedLanguage,
+    location: chat.location
+  });
+  logWeatherDecision({ weather, location: chat.location });
+  const weatherContext = buildWeatherContext(weather, chat.requestedLanguage);
+
   let aiResponse;
   if (routingDecision.source === ROUTING_SOURCES.STORED) {
     aiResponse = {
@@ -469,7 +577,8 @@ export const sendChatMessage = catchAsync(async (req, res) => {
         language: chat.requestedLanguage,
         query: buildRoutedAiQuery(chat, routingDecision),
         caller: req.auth.user,
-        location: chat.location
+        location: chat.location,
+        weatherContext
       });
 
       if (aiResponse.usedWebSearch) {
@@ -494,7 +603,8 @@ export const sendChatMessage = catchAsync(async (req, res) => {
       language: chat.requestedLanguage,
       query: buildRoutedAiQuery(chat, routingDecision),
       caller: req.auth.user,
-      fallbackReply: routingDecision.matchedPlaybook?.responseTemplate || ''
+      fallbackReply: routingDecision.matchedPlaybook?.responseTemplate || '',
+      weatherContext
     });
   }
 
@@ -518,7 +628,8 @@ export const sendChatMessage = catchAsync(async (req, res) => {
     content: aiResponse.reply,
     routingDecision,
     usedWebSearch: aiResponse.usedWebSearch,
-    sources: aiResponse.sources
+    sources: aiResponse.sources,
+    weather: weather.snapshot
   });
 
   conversation.messages.push(userMessage, assistantMessage);
@@ -539,6 +650,12 @@ export const sendChatMessage = catchAsync(async (req, res) => {
       // What the model actually searched for. Not persisted on the message -
       // this is transparency for the answer being delivered right now.
       searchQueries: aiResponse?.searchQueries || [],
+      // Measured conditions for the app's weather card. Null when the message
+      // was not about weather, or when the lookup could not run.
+      weather: weather.snapshot,
+      // The question needed a place and we had none: the app offers a one-tap
+      // location share instead of making the user read an apology.
+      weatherNeedsLocation: weather.needsLocation,
       // The user asked for live data but has none left today. They still get a
       // full answer; the app shows an upgrade note alongside it.
       liveInfoLimited: Boolean(webSearchDecision.limited),
@@ -594,6 +711,14 @@ export const sendChatMessageStream = async (req, res, next) => {
 
     await rememberLocation(req.auth.user._id, chat.freshLocation);
 
+    const weather = await resolveWeather({
+      message: chat.message,
+      language: chat.requestedLanguage,
+      location: chat.location
+    });
+    logWeatherDecision({ weather, location: chat.location });
+    const weatherContext = buildWeatherContext(weather, chat.requestedLanguage);
+
     setSseHeaders(res);
     writeSseEvent(res, 'meta', {
       conversationId: conversation._id,
@@ -606,6 +731,16 @@ export const sendChatMessageStream = async (req, res, next) => {
       liveInfoLimit: webSearchDecision.quota?.limit ?? null,
       ...routeMeta
     });
+
+    // Sent on `meta`, i.e. before the first token: the card is the answer to a
+    // weather question, so it should be on screen while the safety note is
+    // still being written rather than appearing after it.
+    if (weather.snapshot || weather.needsLocation) {
+      writeSseEvent(res, 'weather', {
+        weather: weather.snapshot,
+        weatherNeedsLocation: weather.needsLocation
+      });
+    }
 
     let aiResponse = null;
     if (routingDecision.source === ROUTING_SOURCES.STORED) {
@@ -625,6 +760,7 @@ export const sendChatMessageStream = async (req, res, next) => {
           query: buildRoutedAiQuery(chat, routingDecision),
           caller: req.auth.user,
           location: chat.location,
+          weatherContext,
           onStatus: async (state, detail = {}) => {
             // Drives the live-search indicator in the app. `queries` is what
             // the model actually searched for, shown so the user can see the
@@ -668,6 +804,7 @@ export const sendChatMessageStream = async (req, res, next) => {
         query: buildRoutedAiQuery(chat, routingDecision),
         caller: req.auth.user,
         fallbackReply: routingDecision.matchedPlaybook?.responseTemplate || '',
+        weatherContext,
         onDelta: async (delta) => {
           writeSseEvent(res, 'delta', { text: delta });
         }
@@ -678,7 +815,8 @@ export const sendChatMessageStream = async (req, res, next) => {
       content: aiResponse.reply,
       routingDecision,
       usedWebSearch: aiResponse.usedWebSearch,
-      sources: aiResponse.sources
+      sources: aiResponse.sources,
+      weather: weather.snapshot
     });
 
     conversation.messages.push(userMessage, assistantMessage);
@@ -698,6 +836,8 @@ export const sendChatMessageStream = async (req, res, next) => {
       // What the model actually searched for. Not persisted on the message -
       // this is transparency for the answer being delivered right now.
       searchQueries: aiResponse?.searchQueries || [],
+      weather: weather.snapshot,
+      weatherNeedsLocation: weather.needsLocation,
       liveInfoLimited: Boolean(webSearchDecision.limited),
       liveInfoLimit: webSearchDecision.quota?.limit ?? null,
       ...routeMeta

@@ -52,6 +52,14 @@ const conversationMessageSchema = new mongoose.Schema(
       ],
       default: []
     },
+    // The weather snapshot this answer was built on, when there was one.
+    // Persisted like `sources` so the weather card survives a history reload,
+    // and Mixed because the provider's shape is the contract - pinning it to a
+    // sub-schema here would mean a migration every time a field is added.
+    weather: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null
+    },
     createdAt: {
       type: Date,
       default: Date.now

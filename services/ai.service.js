@@ -148,7 +148,8 @@ const buildAiRequest = async ({
   emergencyType,
   language,
   caller,
-  fallbackReply = ''
+  fallbackReply = '',
+  weatherContext = ''
 }) => {
   const lang = normalizeLanguage(language);
   const config = await readPromptConfig(lang);
@@ -171,8 +172,17 @@ const buildAiRequest = async ({
     includeWelcome: !hasExplicitEmergencyType
   });
 
+  // Measured conditions, when we have them, ride along on the ordinary chat
+  // path too. Weather comes from a free provider and is deliberately NOT gated
+  // by the web-search quota, so a user who is out of live-search allowance
+  // still gets real numbers instead of "I cannot access current weather".
   const messages = [
-    { role: 'system', content: systemMessage },
+    {
+      role: 'system',
+      content: weatherContext
+        ? `${systemMessage}\n\n${weatherContext}`
+        : systemMessage
+    },
     { role: 'user', content: String(query || '') }
   ];
 
@@ -256,14 +266,16 @@ export const requestAiReply = async ({
   emergencyType,
   language,
   caller = null,
-  fallbackReply = ''
+  fallbackReply = '',
+  weatherContext = ''
 }) => {
   const { messages, offlineFallback, maxTokens } = await buildAiRequest({
     query,
     emergencyType,
     language,
     caller,
-    fallbackReply
+    fallbackReply,
+    weatherContext
   });
 
   try {
@@ -313,14 +325,16 @@ export const requestAiReplyStream = async ({
   language,
   onDelta,
   caller = null,
-  fallbackReply = ''
+  fallbackReply = '',
+  weatherContext = ''
 }) => {
   const { messages, offlineFallback, maxTokens } = await buildAiRequest({
     query,
     emergencyType,
     language,
     caller,
-    fallbackReply
+    fallbackReply,
+    weatherContext
   });
   const emitDelta = typeof onDelta === 'function' ? onDelta : async () => {};
   let emittedAnyDelta = false;
@@ -406,7 +420,12 @@ export const requestAiReplyStream = async ({
  * it does with live results. Sending both is what stops the assistant from
  * merely relaying what it found online.
  */
-const buildWebSearchSystemMessage = async ({ language, caller, emergencyType }) => {
+const buildWebSearchSystemMessage = async ({
+  language,
+  caller,
+  emergencyType,
+  weatherContext = ''
+}) => {
   const lang = normalizeLanguage(language);
   const [config, promptConfig, webSearchPromptSetting] = await Promise.all([
     readPromptConfig(lang),
@@ -425,6 +444,10 @@ const buildWebSearchSystemMessage = async ({ language, caller, emergencyType }) 
     '',
     'LIVE INFORMATION MODE:',
     webSearchInstruction,
+    // Measured conditions arrive from the weather provider, not from the
+    // search. Placed after the search instruction so its "do not restate the
+    // figures" rule is the last word on how to present them.
+    ...(weatherContext ? ['', weatherContext] : []),
     '',
     'SELECTED LANGUAGE:',
     languageInstructionFor(lang),
@@ -492,6 +515,7 @@ export const requestAiReplyWithSearch = async ({
   language,
   caller = null,
   location = null,
+  weatherContext = '',
   onDelta,
   onStatus
 }) => {
@@ -508,7 +532,8 @@ export const requestAiReplyWithSearch = async ({
   const { systemMessage, maxTokens } = await buildWebSearchSystemMessage({
     language,
     caller,
-    emergencyType
+    emergencyType,
+    weatherContext
   });
 
   const emitDelta = typeof onDelta === 'function' ? onDelta : async () => {};

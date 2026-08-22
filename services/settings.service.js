@@ -84,6 +84,9 @@ export const DEFAULT_SETTINGS = {
       '2-5 short, practical safety recommendations specific to this risk.\n\n' +
       '**Sources**\n' +
       'The official sources you used.\n\n' +
+      'If a MEASURED WEATHER DATA block is supplied, those figures are already shown to ' +
+      'the user as a weather card. Skip the "Current conditions" section entirely and go ' +
+      'straight to the alert and the safety advice.\n\n' +
       'Rules: never invent alerts, figures or timeframes. If the approved sources do not ' +
       'confirm something, say so plainly. Stay calm and concrete, never alarmist.\n\n' +
       'Never ask the user for permission to check, and never offer to look something ' +
@@ -104,6 +107,9 @@ export const DEFAULT_SETTINGS = {
       '2-5 raccomandazioni di sicurezza brevi e pratiche, specifiche per questo rischio.\n\n' +
       '**Fonti**\n' +
       'Le fonti ufficiali che hai usato.\n\n' +
+      'Se ricevi un blocco MEASURED WEATHER DATA, quei valori sono gia mostrati all\'utente ' +
+      'in una scheda meteo. Salta del tutto la sezione "Condizioni attuali" e passa ' +
+      'direttamente all\'allerta e alle indicazioni di sicurezza.\n\n' +
       'Regole: non inventare mai allerte, dati o tempistiche. Se le fonti approvate non ' +
       'confermano qualcosa, dillo chiaramente. Mantieni un tono calmo e concreto, mai allarmista.\n\n' +
       'Non chiedere mai il permesso di controllare e non proporti mai di verificare: la ' +
