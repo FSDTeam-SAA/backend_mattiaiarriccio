@@ -96,6 +96,19 @@ export const DEFAULT_SETTINGS = {
       'If a MEASURED WEATHER DATA block is supplied, those figures are already shown to ' +
       'the user as a weather card. Skip the "Current conditions" section entirely and go ' +
       'straight to the alert and the safety advice.\n\n' +
+      'EARTHQUAKES - report only, never predict:\n' +
+      '- Report ONLY seismic events that the official sources have actually recorded. ' +
+      'For each one give the magnitude, the time, the approximate location and roughly how ' +
+      'far it was from the area the user asked about.\n' +
+      '- Include small recorded events the user may not have felt, and say so when that is the case.\n' +
+      '- NEVER predict an earthquake, never estimate the chance of one, and never state ' +
+      'that one will or will not happen. If asked, say plainly that earthquakes cannot be predicted ' +
+      'and report what has been recorded instead.\n' +
+      '- If nothing has been recorded, say so in one sentence. That is a complete answer.\n' +
+      '- When a relevant event IS found, always close with the 🛡 What to do section.\n\n' +
+      'OFFICIAL UPDATES: report what the approved sources have actually published recently. ' +
+      'Never suggest you are monitoring every emergency as it happens, and never imply the ' +
+      'absence of an update means the absence of a problem.\n\n' +
       'Rules: never invent alerts, figures or timeframes. If the approved sources do not ' +
       'confirm something, say so plainly in one sentence. Stay calm and concrete, never alarmist.\n\n' +
       'Never ask the user for permission to check, and never offer to look something ' +
@@ -128,6 +141,19 @@ export const DEFAULT_SETTINGS = {
       'Se ricevi un blocco MEASURED WEATHER DATA, quei valori sono gia mostrati all\'utente ' +
       'in una scheda meteo. Salta del tutto la sezione "Condizioni attuali" e passa ' +
       'direttamente all\'allerta e alle indicazioni di sicurezza.\n\n' +
+      'TERREMOTI - solo eventi registrati, mai previsioni:\n' +
+      '- Riporta SOLO gli eventi sismici effettivamente registrati dalle fonti ufficiali. ' +
+      'Per ognuno indica magnitudo, orario, localita approssimativa e circa quanto distava ' +
+      'dalla zona chiesta dall\'utente.\n' +
+      '- Includi anche gli eventi piccoli che l\'utente puo non aver avvertito, dicendolo esplicitamente.\n' +
+      '- Non prevedere MAI un terremoto, non stimare mai la probabilita che avvenga e non ' +
+      'affermare mai che accadra o non accadra. Se te lo chiedono, di chiaramente che i terremoti ' +
+      'non si possono prevedere e riporta invece cosa e stato registrato.\n' +
+      '- Se non e stato registrato nulla, dillo in una frase. E una risposta completa.\n' +
+      '- Quando trovi un evento rilevante, chiudi sempre con la sezione 🛡 Cosa fare.\n\n' +
+      'AGGIORNAMENTI UFFICIALI: riporta cio che le fonti approvate hanno effettivamente ' +
+      'pubblicato di recente. Non far mai credere di monitorare ogni emergenza in tempo reale ' +
+      'e non lasciare mai intendere che l\'assenza di aggiornamenti significhi assenza di problemi.\n\n' +
       'Regole: non inventare mai allerte, dati o tempistiche. Se le fonti approvate non ' +
       'confermano qualcosa, dillo chiaramente in una frase. Mantieni un tono calmo e concreto, mai allarmista.\n\n' +
       'Non chiedere mai il permesso di controllare e non proporti mai di verificare: la ' +
@@ -143,7 +169,8 @@ export const DEFAULT_SETTINGS = {
       'alert', 'alerts', 'warning', 'warnings', 'emergency alert',
       'current', 'currently', 'right now', 'today', 'tonight', 'tomorrow',
       'this week', 'latest', 'news', 'update', 'updates', 'happening',
-      'road closure', 'evacuation', 'earthquake', 'flood', 'wildfire',
+      'road closure', 'evacuation', 'earthquake', 'earthquakes', 'quake',
+      'tremor', 'seismic', 'magnitude', 'flood', 'wildfire',
       'is there', 'are there', 'in my area', 'near me'
     ],
     it: [
@@ -153,7 +180,9 @@ export const DEFAULT_SETTINGS = {
       'attuale', 'attualmente', 'adesso', 'ora', 'oggi', 'stasera', 'domani',
       'questa settimana', 'ultime', 'notizie', 'aggiornamento', 'aggiornamenti',
       'in corso', 'tempo reale', 'strada chiusa', 'evacuazione', 'terremoto',
-      'alluvione', 'incendio', 'ci sono', 'nella mia zona', 'vicino a me'
+      'terremoti', 'sisma', 'sismi', 'sismico', 'sismica', 'scossa', 'scosse',
+      'magnitudo', 'alluvione', 'incendio', 'ci sono', 'nella mia zona',
+      'vicino a me'
     ]
   },
   chatWelcomeMessage: {

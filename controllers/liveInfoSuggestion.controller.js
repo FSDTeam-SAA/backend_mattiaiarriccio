@@ -3,7 +3,9 @@ import catchAsync from '../utils/catchAsync.js';
 import ApiError from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/response.js';
 import { createId } from '../lib/id.js';
-import LiveInfoSuggestion from '../models/liveInfoSuggestion.model.js';
+import LiveInfoSuggestion, {
+  SUGGESTION_KINDS
+} from '../models/liveInfoSuggestion.model.js';
 import { logAudit } from '../services/audit.service.js';
 import {
   ensureSupportedLanguage,
@@ -14,11 +16,22 @@ import {
   parseIntegerInput
 } from '../utils/requestParsers.js';
 
+/**
+ * Rows written before `kind` existed are all Live Information buttons, so an
+ * absent value reads as 'live_info' rather than as a validation error.
+ */
+const normalizeKind = (value, fallback = 'live_info') => {
+  const kind = String(value || '').trim();
+  return SUGGESTION_KINDS.includes(kind) ? kind : fallback;
+};
+
 export const serializeLiveInfoSuggestion = (doc) => ({
   id: doc._id,
   title: doc.title,
   prompt: doc.prompt,
   icon: doc.icon || '',
+  kind: normalizeKind(doc.kind),
+  requiresLocation: doc.requiresLocation === true,
   language: normalizeLanguageCode(doc.language, 'en'),
   order: doc.order ?? 0,
   active: doc.active !== false,
@@ -28,11 +41,28 @@ export const serializeLiveInfoSuggestion = (doc) => ({
 });
 
 /**
- * Active suggestions for one language, ordered. Used by GET /chat/config.
+ * Active rows of one kind for one language, ordered. Used by GET /chat/config.
+ *
+ * The `kind` filter accepts the legacy documents that predate the field: they
+ * were all Live Information buttons, so they are matched when that is what was
+ * asked for and ignored otherwise.
  */
-export const listActiveLiveInfoSuggestions = async (language) => {
+export const listActiveLiveInfoSuggestions = async (
+  language,
+  kind = 'live_info'
+) => {
   const lang = normalizeLanguageCode(language, 'en');
-  return LiveInfoSuggestion.find({ language: lang, active: true })
+  const wanted = normalizeKind(kind);
+  const kindFilter =
+    wanted === 'live_info'
+      ? { $in: [null, 'live_info'] }
+      : wanted;
+
+  return LiveInfoSuggestion.find({
+    language: lang,
+    active: true,
+    kind: kindFilter
+  })
     .sort({ order: 1, createdAt: 1 })
     .lean();
 };
@@ -53,8 +83,16 @@ export const listAdminLiveInfoSuggestions = catchAsync(async (req, res) => {
     filter.active = activeFilter;
   }
 
+  const requestedKind = String(req.query.kind || '').trim();
+  if (requestedKind) {
+    filter.kind =
+      normalizeKind(requestedKind) === 'live_info'
+        ? { $in: [null, 'live_info'] }
+        : normalizeKind(requestedKind);
+  }
+
   const suggestions = await LiveInfoSuggestion.find(filter)
-    .sort({ language: 1, order: 1, createdAt: 1 })
+    .sort({ kind: 1, language: 1, order: 1, createdAt: 1 })
     .lean();
 
   sendSuccess(res, {
@@ -76,11 +114,15 @@ export const createLiveInfoSuggestion = catchAsync(async (req, res) => {
   const order = parseIntegerInput(req.body.order);
   const activeValue = parseBooleanInput(req.body.active);
 
+  const requiresLocation = parseBooleanInput(req.body.requiresLocation);
+
   const created = await LiveInfoSuggestion.create({
     _id: createId('lis'),
     title,
     prompt,
     icon: String(req.body.icon || '').trim(),
+    kind: normalizeKind(req.body.kind),
+    requiresLocation: requiresLocation ?? false,
     language: ensureSupportedLanguage(req.body.language ?? 'en'),
     order: order ?? 0,
     active: activeValue ?? true,
@@ -131,6 +173,15 @@ export const updateLiveInfoSuggestion = catchAsync(async (req, res) => {
 
   if (req.body.icon !== undefined) {
     doc.icon = String(req.body.icon).trim();
+  }
+
+  if (req.body.kind !== undefined) {
+    doc.kind = normalizeKind(req.body.kind, doc.kind);
+  }
+
+  if (req.body.requiresLocation !== undefined) {
+    const requiresLocation = parseBooleanInput(req.body.requiresLocation);
+    if (requiresLocation !== undefined) doc.requiresLocation = requiresLocation;
   }
 
   if (req.body.language !== undefined) {

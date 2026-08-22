@@ -82,39 +82,10 @@ test('empty or missing input never triggers a search', () => {
 });
 
 /* ------------------------------------------------------------------ *
- * Every seeded Live Information shortcut must actually open the live path.
+ * The "every seeded shortcut opens the live path" assertion moved to
+ * tests/welcomePrompts.test.js, where it reads the exported seed content
+ * instead of a hand-copied duplicate of it that drifted out of date.
  * ------------------------------------------------------------------ */
-
-test('seeded live-info prompts all pass their own language gate', async () => {
-  const { default: mod } = await import('../services/webSearchSeed.service.js')
-    .then((m) => ({ default: m }))
-    .catch(() => ({ default: null }));
-  assert.ok(mod, 'seed module should load');
-
-  // Re-declared here rather than exported: the assertion is about the shipped
-  // seed content, so reading it from the module under test is the point.
-  const seeded = [
-    ['What is the current weather in my area right now?', EN],
-    ['Are there any active official alerts or warnings in my area today?', EN],
-    ['Is severe weather expected in my area in the next few hours?', EN],
-    ['What are the latest official civil protection updates for my area?', EN],
-    ['Qual e il meteo attuale nella mia zona adesso?', IT],
-    ['Ci sono allerte o avvisi ufficiali attivi nella mia zona oggi?', IT],
-    ['E previsto maltempo nella mia zona nelle prossime ore?', IT],
-    [
-      'Quali sono gli ultimi aggiornamenti ufficiali della protezione civile per la mia zona?',
-      IT
-    ]
-  ];
-
-  for (const [prompt, triggers] of seeded) {
-    assert.equal(
-      matchesTriggers(prompt, triggers),
-      true,
-      `seeded shortcut "${prompt}" must trigger a web search when tapped`
-    );
-  }
-});
 
 /* ------------------------------------------------------------------ *
  * Domain normalisation
