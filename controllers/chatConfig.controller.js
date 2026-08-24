@@ -34,12 +34,16 @@ export const getChatConfig = catchAsync(async (req, res) => {
     webSearchEnabled,
     liveInfoDocs,
     questionDocs,
+    exampleDocs,
+    sectionContent,
     allowedDomains
   ] = await Promise.all([
     fetchAiPrompt(language),
     getSetting('webSearchEnabled'),
     listActiveLiveInfoSuggestions(language, 'live_info'),
     listActiveLiveInfoSuggestions(language, 'suggested_question'),
+    listActiveLiveInfoSuggestions(language, 'web_search_example'),
+    getSetting('webSearchSectionContent'),
     getAllowedDomains()
   ]);
 
@@ -48,21 +52,11 @@ export const getChatConfig = catchAsync(async (req, res) => {
   const liveInfoAvailable =
     Boolean(webSearchEnabled) && allowedDomains.length > 0;
 
-  // Suggested Questions are dashboard rows once the admin has created any.
-  // Until then the older PromptConfig string list still drives the section, so
-  // an install that has never opened the new dashboard tab is not left with an
-  // empty welcome screen.
-  const suggestedQuestions =
-    questionDocs.length > 0
-      ? questionDocs.map(toClientSuggestion)
-      : (prompt.suggestedQuestions || []).map((text, index) => ({
-          id: `legacy-${index}`,
-          title: String(text),
-          prompt: String(text),
-          icon: '',
-          order: index,
-          requiresLocation: false
-        }));
+  // Quick Questions have one canonical source: the dashboard-managed rows.
+  // Falling back to PromptConfig here would make deleting/disabling the last row
+  // resurrect an older list and was also the path that exposed object internals
+  // as text in earlier clients.
+  const suggestedQuestions = questionDocs.map(toClientSuggestion);
 
   sendSuccess(res, {
     message: 'Chat config fetched successfully',
@@ -70,8 +64,12 @@ export const getChatConfig = catchAsync(async (req, res) => {
       welcomeMessage: prompt.welcomeMessage || '',
       suggestedQuestions,
       webSearchEnabled: liveInfoAvailable,
+      webSearchSection: sectionContent?.[language] || sectionContent?.en || {},
       liveInfoSuggestions: liveInfoAvailable
         ? liveInfoDocs.map(toClientSuggestion)
+        : [],
+      webSearchExamples: liveInfoAvailable
+        ? exampleDocs.map(toClientSuggestion)
         : []
     }
   });

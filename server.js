@@ -17,8 +17,8 @@ const startServer = async () => {
   await seedDatabase();
   // Ensure all AppSetting keys exist (idempotent, safe on every boot).
   await seedSettings();
-  // Approved sources + Live Information shortcuts. Only fills empty
-  // collections, so admin edits are never overwritten.
+  // Install/migrate the versioned Web Search welcome content. The version marker
+  // means lists an admin deliberately empties stay empty on later restarts.
   await seedWebSearchDefaults();
 
   // Reminder/notification scheduler (MongoDB-backed Agenda). Never let a

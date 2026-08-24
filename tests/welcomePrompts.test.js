@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   DEFAULT_LIVE_INFO_BUTTONS,
-  DEFAULT_SUGGESTED_QUESTIONS
+  DEFAULT_SUGGESTED_QUESTIONS,
+  DEFAULT_WEB_SEARCH_EXAMPLES
 } from '../services/webSearchSeed.service.js';
 import { LOCATION_PLACEHOLDER } from '../models/liveInfoSuggestion.model.js';
 import { DEFAULT_SETTINGS } from '../services/settings.service.js';
@@ -65,26 +66,41 @@ test('every Live Information button opens the live path', () => {
   }
 });
 
-test('suggested questions are a mix of live and offline questions', () => {
+test('Quick Questions stay separate from Web Search', () => {
   for (const language of LANGUAGES) {
     const questions = DEFAULT_SUGGESTED_QUESTIONS.filter(
       (entry) => entry.language === language
     );
-    assert.ok(questions.length >= 4, `${language} needs a real list`);
+    assert.equal(questions.length, 3, `${language} should have three defaults`);
 
     const triggers = DEFAULT_SETTINGS.webSearchTriggers[language];
-    const live = questions.filter((entry) =>
-      matchesTriggers(entry.prompt, triggers)
+    assert.ok(
+      questions.every((entry) => !matchesTriggers(entry.prompt, triggers)),
+      `${language} Quick Questions must all use stored WeSafe guidance`
     );
+  }
+});
 
-    assert.ok(
-      live.length > 0,
-      `${language} has no question that reaches a live search`
+test('Web Search examples demonstrate other live questions', () => {
+  for (const language of LANGUAGES) {
+    const examples = DEFAULT_WEB_SEARCH_EXAMPLES.filter(
+      (entry) => entry.language === language
     );
+    assert.ok(examples.length > 0, `${language} needs a Web Search example`);
     assert.ok(
-      live.length < questions.length,
-      `${language} has no question WeSafe answers from its own guidance`
+      examples.every((entry) =>
+        matchesTriggers(entry.prompt, DEFAULT_SETTINGS.webSearchTriggers[language])
+      ),
+      `${language} examples must open the live-search path`
     );
+  }
+});
+
+test('the Web Search section has dashboard defaults in both languages', () => {
+  for (const language of LANGUAGES) {
+    const content = DEFAULT_SETTINGS.webSearchSectionContent[language];
+    assert.ok(content.title.trim());
+    assert.ok(content.description.trim());
   }
 });
 

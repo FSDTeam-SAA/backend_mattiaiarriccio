@@ -27,6 +27,8 @@ import ApiError from '../utils/ApiError.js';
  *                                  results are combined with WeSafe safety guidance
  * - webSearchTriggers (object)   : { en[], it[] } keywords that make the web_search tool
  *                                  available. If none match, chat runs exactly as before.
+ * - webSearchSectionContent     : { en, it } localized title and description shown above
+ *                                  the Web Search buttons on the chat welcome screen
  */
 export const DEFAULT_SETTINGS = {
   freeDailyMessageLimit: 20,
@@ -66,6 +68,18 @@ export const DEFAULT_SETTINGS = {
   webSearchFreeDailyLimit: 2,
   webSearchPremiumDailyLimit: 20,
   webSearchContextSize: 'low',
+  webSearchSectionContent: {
+    en: {
+      title: 'Updated Information',
+      description:
+        'WeSafe AI can check recent information from selected sources. Ask about weather, alerts, earthquakes, or other safety updates.'
+    },
+    it: {
+      title: 'Informazioni aggiornate',
+      description:
+        'WeSafe AI può verificare informazioni recenti da fonti selezionate. Chiedi di meteo, allerte, sismi o altri aggiornamenti sulla sicurezza.'
+    }
+  },
   // Dedicated Web Search prompt. Deliberately separate from freePrompt/premiumPrompt:
   // those define WHO WeSafe is, this defines what it does with live results. Both are
   // sent together so live data is always wrapped in WeSafe's safety guidance.
@@ -338,6 +352,29 @@ const VALIDATORS = {
     if (!allowed.includes(v))
       throw `webSearchContextSize must be one of: ${allowed.join(', ')}`;
     return v;
+  },
+  webSearchSectionContent: (v) => {
+    if (!isPlainObject(v))
+      throw 'webSearchSectionContent must be an object { en, it }';
+    const result = {};
+    for (const lang of ['en', 'it']) {
+      const incoming = isPlainObject(v[lang]) ? v[lang] : {};
+      const base = DEFAULT_SETTINGS.webSearchSectionContent[lang];
+      const title = incoming.title === undefined ? base.title : incoming.title;
+      const description =
+        incoming.description === undefined
+          ? base.description
+          : incoming.description;
+      if (typeof title !== 'string' || !title.trim())
+        throw `webSearchSectionContent.${lang}.title must be a non-empty string`;
+      if (typeof description !== 'string' || !description.trim())
+        throw `webSearchSectionContent.${lang}.description must be a non-empty string`;
+      result[lang] = {
+        title: title.trim(),
+        description: description.trim()
+      };
+    }
+    return result;
   },
   webSearchPrompt: (v) => {
     if (!isPlainObject(v))

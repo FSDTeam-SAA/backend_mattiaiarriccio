@@ -7,13 +7,14 @@ import mongoose from 'mongoose';
  *  - `live_info`          : the Live Information buttons (Weather, Alerts,
  *                           Earthquakes, Official Updates), shown only when a
  *                           live search can actually run.
- *  - `suggested_question` : the ordinary Suggested Questions list, a deliberate
- *                           mix of questions that trigger a live search and
- *                           questions WeSafe answers from its own guidance.
+ *  - `suggested_question` : ordinary Quick Questions answered from WeSafe's
+ *                           existing safety guidance.
+ *  - `web_search_example` : the small example prompts shown underneath the
+ *                           Live Information buttons.
  *
- * One collection rather than two because the admin needs exactly the same five
- * controls over both - title, prompt, language, order, enabled - and a single
- * CRUD keeps the dashboard and the API honest about that.
+ * One collection for all three because the admin needs the same controls over
+ * each - title, prompt, language, order, enabled - and a single CRUD keeps the
+ * dashboard and the API honest about that.
  *
  * Same shape as EmergencyResponse (per-row `language`, `order`, `active`) so the
  * admin CRUD and reorder UI behave identically. Tapping one sends `prompt` as a
@@ -21,8 +22,12 @@ import mongoose from 'mongoose';
  * web-search gate and limits apply exactly as they would to a typed question.
  */
 
-/** The two flavours of prompt this collection holds. */
-export const SUGGESTION_KINDS = ['live_info', 'suggested_question'];
+/** The three kinds of welcome-screen prompt this collection holds. */
+export const SUGGESTION_KINDS = [
+  'live_info',
+  'suggested_question',
+  'web_search_example'
+];
 
 /**
  * Placeholder the admin puts in a prompt where the place belongs, e.g.
