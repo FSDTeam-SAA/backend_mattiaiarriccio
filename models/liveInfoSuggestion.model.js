@@ -37,6 +37,15 @@ export const SUGGESTION_KINDS = [
  */
 export const LOCATION_PLACEHOLDER = '{location}';
 
+// Dashboard content may have been pasted using a Mustache-style token or a
+// differently cased name. Keep one API contract while accepting those legacy
+// spellings so literal template braces never reach the chat UI.
+export const normalizeLocationPlaceholder = (value) =>
+  String(value || '').replace(
+    /\{\{\s*(?:location|requested_location)\s*\}\}|\{\s*(?:location|requested_location)\s*\}/gi,
+    LOCATION_PLACEHOLDER
+  );
+
 const liveInfoSuggestionSchema = new mongoose.Schema(
   {
     _id: {

@@ -4,8 +4,30 @@ import assert from 'node:assert/strict';
 import {
   renderWebSearchPrompt,
   sanitizeWebSearchReply,
-  finalizeWebSearchReply
+  finalizeWebSearchReply,
+  selectAllowedDomainsForSearch
 } from '../services/ai.service.js';
+
+test('earthquake searches use the approved INGV catalogue only', () => {
+  const domains = [
+    'meteoam.it',
+    'mappe.protezionecivile.gov.it',
+    'terremoti.ingv.it',
+    'vigilfuoco.it'
+  ];
+
+  assert.deepEqual(
+    selectAllowedDomainsForSearch(
+      domains,
+      'Which earthquakes were recorded near Apice in the last 24 hours?'
+    ),
+    ['terremoti.ingv.it']
+  );
+  assert.deepEqual(
+    selectAllowedDomainsForSearch(domains, 'Are there weather alerts today?'),
+    domains
+  );
+});
 
 test('dashboard Web Search placeholders are filled for the live request', () => {
   const rendered = renderWebSearchPrompt(
@@ -61,6 +83,22 @@ test('an empty earthquake result becomes the single required sentence', () => {
   assert.equal(
     cleaned,
     'Non sono stati trovati terremoti rilevanti per la zona e il periodo richiesti nelle fonti approvate consultate.'
+  );
+});
+
+test('the observed INGV no-result wording is also reduced to one sentence', () => {
+  const cleaned = finalizeWebSearchReply(
+    'No relevant earthquakes recorded by INGV within 24 hours near Apice.\n\n' +
+      'What to do:\n- Check the website again later.',
+    {
+      language: 'en',
+      query: 'Which earthquakes were recorded near Apice?'
+    }
+  );
+
+  assert.equal(
+    cleaned,
+    'No relevant earthquakes were found for the requested area and time period in the approved sources checked.'
   );
 });
 

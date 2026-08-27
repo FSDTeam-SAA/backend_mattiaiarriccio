@@ -6,7 +6,10 @@ import {
   DEFAULT_SUGGESTED_QUESTIONS,
   DEFAULT_WEB_SEARCH_EXAMPLES
 } from '../services/webSearchSeed.service.js';
-import { LOCATION_PLACEHOLDER } from '../models/liveInfoSuggestion.model.js';
+import {
+  LOCATION_PLACEHOLDER,
+  normalizeLocationPlaceholder
+} from '../models/liveInfoSuggestion.model.js';
 import { DEFAULT_SETTINGS } from '../services/settings.service.js';
 import { matchesTriggers } from '../services/webSearch.service.js';
 
@@ -77,6 +80,23 @@ test('Quick Questions stay separate from Web Search', () => {
     assert.ok(
       questions.every((entry) => !matchesTriggers(entry.prompt, triggers)),
       `${language} Quick Questions must all use stored WeSafe guidance`
+    );
+  }
+});
+
+test('dashboard location placeholder variants normalize to one API token', () => {
+  const variants = [
+    '{location}',
+    '{ LOCATION }',
+    '{{location}}',
+    '{{ LOCATION }}',
+    '{{requested_location}}'
+  ];
+
+  for (const variant of variants) {
+    assert.equal(
+      normalizeLocationPlaceholder(`Earthquakes near ${variant} today`),
+      `Earthquakes near ${LOCATION_PLACEHOLDER} today`
     );
   }
 });

@@ -4,7 +4,8 @@ import ApiError from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/response.js';
 import { createId } from '../lib/id.js';
 import LiveInfoSuggestion, {
-  SUGGESTION_KINDS
+  SUGGESTION_KINDS,
+  normalizeLocationPlaceholder
 } from '../models/liveInfoSuggestion.model.js';
 import { logAudit } from '../services/audit.service.js';
 import {
@@ -28,7 +29,7 @@ const normalizeKind = (value, fallback = 'live_info') => {
 export const serializeLiveInfoSuggestion = (doc) => ({
   id: doc._id,
   title: doc.title,
-  prompt: doc.prompt,
+  prompt: normalizeLocationPlaceholder(doc.prompt),
   icon: doc.icon || '',
   kind: normalizeKind(doc.kind),
   requiresLocation: doc.requiresLocation === true,
@@ -106,7 +107,7 @@ export const listAdminLiveInfoSuggestions = catchAsync(async (req, res) => {
  */
 export const createLiveInfoSuggestion = catchAsync(async (req, res) => {
   const title = String(req.body.title || '').trim();
-  const prompt = String(req.body.prompt || '').trim();
+  const prompt = normalizeLocationPlaceholder(req.body.prompt).trim();
 
   if (!title) throw new ApiError(StatusCodes.BAD_REQUEST, 'title is required');
   if (!prompt) throw new ApiError(StatusCodes.BAD_REQUEST, 'prompt is required');
@@ -164,7 +165,7 @@ export const updateLiveInfoSuggestion = catchAsync(async (req, res) => {
   }
 
   if (req.body.prompt !== undefined) {
-    const prompt = String(req.body.prompt).trim();
+    const prompt = normalizeLocationPlaceholder(req.body.prompt).trim();
     if (!prompt) {
       throw new ApiError(StatusCodes.BAD_REQUEST, 'prompt cannot be empty');
     }

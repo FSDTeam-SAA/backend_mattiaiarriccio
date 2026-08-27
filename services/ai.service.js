@@ -439,6 +439,25 @@ const searchModeFor = (query) => {
   return 'AUTO';
 };
 
+/**
+ * Earthquake lookups must use the official INGV catalogue when an INGV host
+ * is approved. Giving the model unrelated weather/radar domains alongside it
+ * was observed to produce a confident "no events" answer without consulting
+ * INGV at all. Other modes retain the complete admin-approved source list.
+ */
+export const selectAllowedDomainsForSearch = (domains, query) => {
+  const approved = (Array.isArray(domains) ? domains : [])
+    .map((domain) => String(domain || '').trim().toLowerCase())
+    .filter(Boolean);
+
+  if (searchModeFor(query) !== 'EARTHQUAKES') return approved;
+
+  const ingvDomains = approved.filter(
+    (domain) => domain === 'ingv.it' || domain.endsWith('.ingv.it')
+  );
+  return ingvDomains.length > 0 ? ingvDomains : approved;
+};
+
 const locationLabel = (location) =>
   [location?.city, location?.region, location?.country]
     .map((part) => String(part || '').trim())
@@ -527,7 +546,7 @@ export const finalizeWebSearchReply = (value, { language, query } = {}) => {
     .replace(/^[ \t]*What to do[ \t]*:[ \t]*$/gim, '🛡 **What to do**');
 
   const saysNoEarthquakes =
-    /non (?:risultano|sono stati trovati).*(?:terremot|eventi sismic)|nessun (?:evento|terremoto).*(?:zona|area|trovat)|no (?:relevant )?(?:earthquakes|seismic events).*found/i.test(
+    /non (?:risultano|sono stati trovati).*(?:terremot|eventi sismic)|nessun (?:evento|terremoto).*(?:zona|area|trovat)|no (?:relevant )?(?:ingv )?(?:earthquakes|seismic events|events).*(?:found|recorded)/i.test(
       reply
     );
   if (mode === 'EARTHQUAKES' && saysNoEarthquakes) {
@@ -664,7 +683,11 @@ export const requestAiReplyWithSearch = async ({
   onDelta,
   onStatus
 }) => {
-  const allowedDomains = await getAllowedDomains();
+  const configuredDomains = await getAllowedDomains();
+  const allowedDomains = selectAllowedDomainsForSearch(
+    configuredDomains,
+    query
+  );
 
   // No approved sources means no search we are allowed to run. Searching the
   // open web instead would violate the agreed behaviour, so refuse the path.
