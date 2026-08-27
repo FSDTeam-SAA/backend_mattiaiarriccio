@@ -118,7 +118,9 @@ export const DEFAULT_SETTINGS = {
       '- NEVER predict an earthquake, never estimate the chance of one, and never state ' +
       'that one will or will not happen. If asked, say plainly that earthquakes cannot be predicted ' +
       'and report what has been recorded instead.\n' +
-      '- If nothing has been recorded, say so in one sentence. That is a complete answer.\n' +
+      '- If nothing relevant has been recorded in the requested area and time period, say ' +
+      'that no relevant events were found in the approved sources checked. Do not tell the user ' +
+      'to search those sites manually. That is a complete answer.\n' +
       '- When a relevant event IS found, always close with the 🛡 What to do section.\n\n' +
       'OFFICIAL UPDATES: report what the approved sources have actually published recently. ' +
       'Never suggest you are monitoring every emergency as it happens, and never imply the ' +
@@ -127,7 +129,9 @@ export const DEFAULT_SETTINGS = {
       'confirm something, say so plainly in one sentence. Stay calm and concrete, never alarmist.\n\n' +
       'Never ask the user for permission to check, and never offer to look something ' +
       'up: the search has already run and you are answering with its results. Never ' +
-      'reply with a question instead of an answer. If you found nothing relevant, say ' +
+      'say that you lack live or real-time data access. Never redirect the user to run ' +
+      'the same search manually. ' +
+      'Never reply with a question instead of an answer. If you found nothing relevant, say ' +
       'so directly and still give the safety guidance that applies.',
     it:
       'Hai appena recuperato informazioni in tempo reale da fonti ufficiali approvate.\n\n' +
@@ -163,7 +167,9 @@ export const DEFAULT_SETTINGS = {
       '- Non prevedere MAI un terremoto, non stimare mai la probabilita che avvenga e non ' +
       'affermare mai che accadra o non accadra. Se te lo chiedono, di chiaramente che i terremoti ' +
       'non si possono prevedere e riporta invece cosa e stato registrato.\n' +
-      '- Se non e stato registrato nulla, dillo in una frase. E una risposta completa.\n' +
+      '- Se non risultano eventi rilevanti nella zona e nel periodo richiesti, di che ' +
+      'non sono stati trovati eventi rilevanti nelle fonti approvate consultate. Non invitare ' +
+      'l\'utente a cercare manualmente negli stessi siti. E una risposta completa.\n' +
       '- Quando trovi un evento rilevante, chiudi sempre con la sezione 🛡 Cosa fare.\n\n' +
       'AGGIORNAMENTI UFFICIALI: riporta cio che le fonti approvate hanno effettivamente ' +
       'pubblicato di recente. Non far mai credere di monitorare ogni emergenza in tempo reale ' +
@@ -172,7 +178,9 @@ export const DEFAULT_SETTINGS = {
       'confermano qualcosa, dillo chiaramente in una frase. Mantieni un tono calmo e concreto, mai allarmista.\n\n' +
       'Non chiedere mai il permesso di controllare e non proporti mai di verificare: la ' +
       'ricerca e gia stata eseguita e stai rispondendo con i suoi risultati. Non ' +
-      'rispondere mai con una domanda al posto di una risposta. Se non hai trovato nulla ' +
+      'dire mai di non avere accesso a dati attuali o in tempo reale. Non rimandare ' +
+      'l\'utente a eseguire manualmente la stessa ricerca. ' +
+      'Non rispondere mai con una domanda al posto di una risposta. Se non hai trovato nulla ' +
       'di rilevante, dillo direttamente e fornisci comunque le indicazioni di sicurezza utili.'
   },
   // The cost gate. If nothing here matches the user's message, the web_search tool is

@@ -53,7 +53,16 @@ export const matchesTriggers = (text, triggers) => {
   });
 };
 
-export const shouldConsiderWebSearch = async ({ text, language }) => {
+export const shouldConsiderWebSearch = async ({
+  text,
+  language,
+  force = false
+}) => {
+  // Dedicated Live Information actions have already expressed intent. Return
+  // before the trigger settings read so an admin prompt edit cannot break a
+  // button by accidentally removing its keyword.
+  if (force) return true;
+
   const lang = normalizeLanguage(language);
   const triggers = await getSetting('webSearchTriggers');
   return matchesTriggers(text, triggers?.[lang]);

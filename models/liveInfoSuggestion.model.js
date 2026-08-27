@@ -17,9 +17,9 @@ import mongoose from 'mongoose';
  * dashboard and the API honest about that.
  *
  * Same shape as EmergencyResponse (per-row `language`, `order`, `active`) so the
- * admin CRUD and reorder UI behave identically. Tapping one sends `prompt` as a
- * normal chat message - it is a shortcut, not a separate code path, so the usual
- * web-search gate and limits apply exactly as they would to a typed question.
+ * admin CRUD and reorder UI behave identically. The client marks `live_info`
+ * taps as explicit Web Search requests; examples and Quick Questions stay on
+ * the normal trigger-driven path. Feature, source and quota gates still apply.
  */
 
 /** The three kinds of welcome-screen prompt this collection holds. */

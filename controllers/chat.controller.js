@@ -17,6 +17,7 @@ import {
 import {
   detectWeatherIntent,
   extractRequestedPlace,
+  placeMatchesLocation,
   getWeatherSnapshot,
   formatWeatherContext
 } from '../services/weather.service.js';
@@ -88,6 +89,9 @@ const normalizeEmergencyType = (value) =>
 
 const pickFirstDefined = (...values) =>
   values.find((value) => value !== undefined && value !== null && value !== '');
+
+const parseBooleanFlag = (value) =>
+  value === true || value === 1 || value === 'true' || value === '1';
 
 const resolveEmergencyType = (requestedEmergencyType, conversation) =>
   requestedEmergencyType ||
@@ -167,6 +171,11 @@ const parseChatRequest = async (req) => {
   const requestedConversationId = String(
     pickFirstDefined(req.body.conversationId, req.body.conversation_id) || ''
   ).trim();
+  // Set only by the four dedicated Live Information actions. Typed messages
+  // leave this false and continue through the dashboard-managed trigger gate.
+  const forceWebSearch = parseBooleanFlag(
+    pickFirstDefined(req.body.forceWebSearch, req.body.force_web_search)
+  );
 
   if (!message) {
     throw new ApiError(
@@ -211,6 +220,7 @@ const parseChatRequest = async (req) => {
     message,
     conversation,
     effectiveEmergencyType,
+    forceWebSearch,
     location,
     freshLocation: parseLocationInput(req.body),
     aiQuery: buildAiQuery({
@@ -315,10 +325,28 @@ const parseLocationInput = (body) => {
     city: String(raw.city || '').trim(),
     region: String(raw.region || raw.state || '').trim(),
     country: String(raw.country || raw.countryCode || '').trim(),
-    timezone: String(raw.timezone || '').trim()
+    timezone: String(raw.timezone || '').trim(),
+    latitude: Number(raw.latitude),
+    longitude: Number(raw.longitude),
+    accuracyMeters: Number(raw.accuracyMeters ?? raw.accuracy)
   };
 
-  return location.city || location.region || location.country ? location : null;
+  if (!Number.isFinite(location.latitude) || location.latitude < -90 || location.latitude > 90) {
+    delete location.latitude;
+  }
+  if (!Number.isFinite(location.longitude) || location.longitude < -180 || location.longitude > 180) {
+    delete location.longitude;
+  }
+  if (!Number.isFinite(location.accuracyMeters) || location.accuracyMeters < 0) {
+    delete location.accuracyMeters;
+  }
+
+  return location.city ||
+    location.region ||
+    location.country ||
+    (location.latitude !== undefined && location.longitude !== undefined)
+    ? location
+    : null;
 };
 
 /**
@@ -334,18 +362,22 @@ const parseLocationInput = (body) => {
  * wanted live data but is out of allowance: they still get a normal answer,
  * and the app shows an upgrade note.
  */
-const resolveWebSearchDecision = async ({ message, language, user, routingDecision }) => {
-  // A stored playbook is an approved, deterministic answer - never override it.
-  if (routingDecision?.source === ROUTING_SOURCES.STORED) {
-    return { search: false, limited: false, reason: 'stored-playbook-matched' };
-  }
-
+const resolveWebSearchDecision = async ({
+  message,
+  language,
+  user,
+  forceWebSearch = false
+}) => {
   const enabled = await getSetting('webSearchEnabled');
   if (!enabled) {
     return { search: false, limited: false, reason: 'webSearchEnabled=false' };
   }
 
-  const wantsLiveInfo = await shouldConsiderWebSearch({ text: message, language });
+  const wantsLiveInfo = await shouldConsiderWebSearch({
+    text: message,
+    language,
+    force: forceWebSearch
+  });
   if (!wantsLiveInfo) {
     return { search: false, limited: false, reason: 'no-trigger-keyword-matched' };
   }
@@ -360,7 +392,36 @@ const resolveWebSearchDecision = async ({ message, language, user, routingDecisi
     };
   }
 
-  return { search: true, limited: false, quota, reason: 'live-path-selected' };
+  return {
+    search: true,
+    limited: false,
+    quota,
+    reason: forceWebSearch
+      ? 'dedicated-live-information-action'
+      : 'live-trigger-matched'
+  };
+};
+
+/**
+ * A live request may also resemble an emergency playbook. Keep that approved
+ * playbook in the AI context, but mark the delivered answer as an OpenAI/Web
+ * Search answer instead of claiming the static template was returned.
+ */
+const routingDecisionForAnswer = (routingDecision, webSearchDecision) => {
+  if (!webSearchDecision.search) return routingDecision;
+
+  const reason = 'Live information request routed to approved-source Web Search.';
+  return {
+    ...routingDecision,
+    source: ROUTING_SOURCES.OPENAI,
+    reason,
+    metadata: {
+      routingSource: ROUTING_SOURCES.OPENAI,
+      routingConfidence: routingDecision?.confidence || 0,
+      matchedPlaybookId: routingDecision?.matchedPlaybookId || '',
+      routingReason: reason
+    }
+  };
 };
 
 /**
@@ -394,9 +455,17 @@ const logWebSearchDecision = ({ decision, message, language, hasLocation }) => {
 const rememberLocation = async (userId, location) => {
   if (!userId || !location) return;
   try {
+    // Exact coordinates are used only for this request's weather lookup. Keep
+    // only the coarse place for follow-up search bias and data minimisation.
+    const coarseLocation = {
+      city: location.city || '',
+      region: location.region || '',
+      country: location.country || '',
+      timezone: location.timezone || ''
+    };
     await User.updateOne(
       { _id: userId },
-      { $set: { lastLocation: { ...location, updatedAt: new Date() } } }
+      { $set: { lastLocation: { ...coarseLocation, updatedAt: new Date() } } }
     );
   } catch (error) {
     console.error(
@@ -432,7 +501,7 @@ const resolveWeather = async ({ message, language, location }) => {
   // If it does not geocode it was not a place, and the device location below
   // still answers the question.
   const requestedPlace = extractRequestedPlace(message);
-  if (requestedPlace) {
+  if (requestedPlace && !placeMatchesLocation(requestedPlace, location)) {
     const snapshot = await getWeatherSnapshot({
       location: { city: requestedPlace },
       language
@@ -543,8 +612,12 @@ export const sendChatMessage = catchAsync(async (req, res) => {
     message: chat.message,
     language: chat.requestedLanguage,
     user: req.auth.user,
-    routingDecision
+    forceWebSearch: chat.forceWebSearch
   });
+  const answerRoutingDecision = routingDecisionForAnswer(
+    routingDecision,
+    webSearchDecision
+  );
   logWebSearchDecision({
     decision: webSearchDecision,
     message: chat.message,
@@ -565,12 +638,7 @@ export const sendChatMessage = catchAsync(async (req, res) => {
   const weatherContext = buildWeatherContext(weather, chat.requestedLanguage);
 
   let aiResponse;
-  if (routingDecision.source === ROUTING_SOURCES.STORED) {
-    aiResponse = {
-      reply: routingDecision.matchedPlaybook.responseTemplate,
-      emergency: true
-    };
-  } else if (webSearchDecision.search) {
+  if (webSearchDecision.search) {
     try {
       aiResponse = await requestAiReplyWithSearch({
         emergencyType: chat.effectiveEmergencyType,
@@ -595,6 +663,11 @@ export const sendChatMessage = catchAsync(async (req, res) => {
       );
       aiResponse = null;
     }
+  } else if (routingDecision.source === ROUTING_SOURCES.STORED) {
+    aiResponse = {
+      reply: routingDecision.matchedPlaybook.responseTemplate,
+      emergency: true
+    };
   }
 
   if (!aiResponse) {
@@ -626,7 +699,7 @@ export const sendChatMessage = catchAsync(async (req, res) => {
 
   const assistantMessage = buildAssistantMessage({
     content: aiResponse.reply,
-    routingDecision,
+    routingDecision: answerRoutingDecision,
     usedWebSearch: aiResponse.usedWebSearch,
     sources: aiResponse.sources,
     weather: weather.snapshot
@@ -644,7 +717,9 @@ export const sendChatMessage = catchAsync(async (req, res) => {
       assistantMessage: serializeMessage(assistantMessage),
       aiSource: getAiServiceInfo(),
       degraded: Boolean(aiResponse?.degraded),
-      emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
+      emergencyOverride:
+        routingDecision.source === ROUTING_SOURCES.STORED &&
+        !webSearchDecision.search,
       usedWebSearch: Boolean(aiResponse?.usedWebSearch),
       sources: aiResponse?.sources || [],
       // What the model actually searched for. Not persisted on the message -
@@ -694,14 +769,17 @@ export const sendChatMessageStream = async (req, res, next) => {
       emergencyType: chat.effectiveEmergencyType,
       conversation: chat.conversation?.toObject()
     });
-    const routeMeta = routingMetadata(routingDecision);
-
     const webSearchDecision = await resolveWebSearchDecision({
       message: chat.message,
       language: chat.requestedLanguage,
       user: req.auth.user,
-      routingDecision
+      forceWebSearch: chat.forceWebSearch
     });
+    const answerRoutingDecision = routingDecisionForAnswer(
+      routingDecision,
+      webSearchDecision
+    );
+    const routeMeta = routingMetadata(answerRoutingDecision);
     logWebSearchDecision({
       decision: webSearchDecision,
       message: chat.message,
@@ -726,7 +804,9 @@ export const sendChatMessageStream = async (req, res, next) => {
       language: conversation.language || 'en',
       userMessage: serializeMessage(userMessage),
       aiSource: getAiServiceInfo(),
-      emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
+      emergencyOverride:
+        routingDecision.source === ROUTING_SOURCES.STORED &&
+        !webSearchDecision.search,
       liveInfoLimited: Boolean(webSearchDecision.limited),
       liveInfoLimit: webSearchDecision.quota?.limit ?? null,
       ...routeMeta
@@ -743,15 +823,7 @@ export const sendChatMessageStream = async (req, res, next) => {
     }
 
     let aiResponse = null;
-    if (routingDecision.source === ROUTING_SOURCES.STORED) {
-      aiResponse = {
-        reply: routingDecision.matchedPlaybook.responseTemplate,
-        emergency: true
-      };
-      writeSseEvent(res, 'delta', {
-        text: routingDecision.matchedPlaybook.responseTemplate
-      });
-    } else if (webSearchDecision.search) {
+    if (webSearchDecision.search) {
       let emittedAnyDelta = false;
       try {
         aiResponse = await requestAiReplyWithSearch({
@@ -795,6 +867,14 @@ export const sendChatMessageStream = async (req, res, next) => {
         writeSseEvent(res, 'status', { state: 'unavailable' });
         aiResponse = null;
       }
+    } else if (routingDecision.source === ROUTING_SOURCES.STORED) {
+      aiResponse = {
+        reply: routingDecision.matchedPlaybook.responseTemplate,
+        emergency: true
+      };
+      writeSseEvent(res, 'delta', {
+        text: routingDecision.matchedPlaybook.responseTemplate
+      });
     }
 
     if (!aiResponse) {
@@ -813,7 +893,7 @@ export const sendChatMessageStream = async (req, res, next) => {
 
     const assistantMessage = buildAssistantMessage({
       content: aiResponse.reply,
-      routingDecision,
+      routingDecision: answerRoutingDecision,
       usedWebSearch: aiResponse.usedWebSearch,
       sources: aiResponse.sources,
       weather: weather.snapshot
@@ -830,7 +910,9 @@ export const sendChatMessageStream = async (req, res, next) => {
       assistantMessage: serializeMessage(assistantMessage),
       aiSource: getAiServiceInfo(),
       degraded: Boolean(aiResponse?.degraded),
-      emergencyOverride: routingDecision.source === ROUTING_SOURCES.STORED,
+      emergencyOverride:
+        routingDecision.source === ROUTING_SOURCES.STORED &&
+        !webSearchDecision.search,
       usedWebSearch: Boolean(aiResponse?.usedWebSearch),
       sources: aiResponse?.sources || [],
       // What the model actually searched for. Not persisted on the message -

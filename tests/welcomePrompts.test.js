@@ -127,3 +127,12 @@ test('the web search prompt forbids predicting earthquakes', () => {
   assert.match(it, /Non prevedere MAI un terremoto/);
   assert.match(it, /non si possono prevedere/);
 });
+
+test('the web search prompt reports empty results without redirecting the user', () => {
+  const { en, it } = DEFAULT_SETTINGS.webSearchPrompt;
+  assert.match(en, /no relevant events were found in the approved sources checked/);
+  assert.match(en, /Do not tell the user to search those sites manually/);
+  assert.match(en, /Never redirect the user to run the same search manually/);
+  assert.match(it, /non sono stati trovati eventi rilevanti nelle fonti approvate/);
+  assert.match(it, /Non invitare l'utente a cercare manualmente/);
+});

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   matchesTriggers,
+  shouldConsiderWebSearch,
   extractSources,
   responseUsedWebSearch,
   buildUserLocation,
@@ -79,6 +80,17 @@ test('empty or missing input never triggers a search', () => {
   assert.equal(matchesTriggers(null, EN), false);
   assert.equal(matchesTriggers('weather', undefined), false);
   assert.equal(matchesTriggers('weather', []), false);
+});
+
+test('a dedicated Live Information action bypasses trigger matching', async () => {
+  assert.equal(
+    await shouldConsiderWebSearch({
+      text: 'An admin-edited shortcut with no trigger words',
+      language: 'en',
+      force: true
+    }),
+    true
+  );
 });
 
 /* ------------------------------------------------------------------ *

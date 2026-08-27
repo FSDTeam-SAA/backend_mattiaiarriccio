@@ -169,6 +169,22 @@ export const extractRequestedPlace = (text) => {
   return null;
 };
 
+/**
+ * True when the place parsed from the sentence is the same place supplied by
+ * the device. Dedicated Weather prompts include the reverse-geocoded city in
+ * their text; recognising it here preserves the accompanying GPS point instead
+ * of geocoding that city back to its approximate centre.
+ */
+export const placeMatchesLocation = (requestedPlace, location) => {
+  const requested = normalizeForMatch(requestedPlace);
+  if (!requested || !location) return false;
+
+  return [location.city, location.region]
+    .map(normalizeForMatch)
+    .filter(Boolean)
+    .some((candidate) => candidate === requested);
+};
+
 /* ------------------------------------------------------------------ *
  * 2. WMO code -> human condition
  * ------------------------------------------------------------------ */
@@ -258,11 +274,9 @@ const round = (value, decimals = 0) => {
 };
 
 /**
- * Turns the coarse city/region/country the app already sends into coordinates.
- *
- * The app reverse-geocodes GPS to a city name before sending, so this re-derives
- * a point from that name rather than receiving coordinates - the location
- * contract with the client stays city-level, exactly as it is for web search.
+ * Turns a named city/region/country into coordinates. Device-location requests
+ * can already carry a validated GPS point and bypass this lossy round trip;
+ * typed place names still use the geocoder.
  */
 const geocodePlace = async ({ city, region, country }) => {
   const name = String(city || region || country || '').trim();
@@ -396,7 +410,19 @@ export const getWeatherSnapshot = async ({ location, language = 'en' } = {}) => 
   const lang = String(language).startsWith('it') ? 'it' : 'en';
   if (!location) return null;
 
+  const latitude = Number(location.latitude);
+  const longitude = Number(location.longitude);
+  const hasExactPoint =
+    Number.isFinite(latitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    Number.isFinite(longitude) &&
+    longitude >= -180 &&
+    longitude <= 180;
+
   const cacheKey = [
+    hasExactPoint ? latitude.toFixed(4) : '',
+    hasExactPoint ? longitude.toFixed(4) : '',
     String(location.city || '').toLowerCase(),
     String(location.region || '').toLowerCase(),
     String(location.country || '').toLowerCase(),
@@ -407,7 +433,22 @@ export const getWeatherSnapshot = async ({ location, language = 'en' } = {}) => 
   if (cached) return cached;
 
   try {
-    const place = await geocodePlace(location);
+    // Use the phone's measured point for weather. Web Search still receives
+    // only city/region/country through buildUserLocation(), because OpenAI's
+    // search location contract is intentionally approximate.
+    const place = hasExactPoint
+      ? {
+          name:
+            String(location.city || location.region || '').trim() ||
+            (lang === 'it' ? 'Posizione attuale' : 'Current location'),
+          region: String(location.region || ''),
+          country: String(location.country || ''),
+          countryCode: String(location.country || '').toUpperCase(),
+          latitude,
+          longitude,
+          timezone: String(location.timezone || '')
+        }
+      : await geocodePlace(location);
     if (!place) {
       console.warn(
         `[weather.service] no coordinates for "${location.city || location.region || location.country}"`

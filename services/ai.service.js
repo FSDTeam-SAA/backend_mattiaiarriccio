@@ -420,10 +420,149 @@ export const requestAiReplyStream = async ({
  * it does with live results. Sending both is what stops the assistant from
  * merely relaying what it found online.
  */
+const searchModeFor = (query) => {
+  const text = String(query || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, ' ');
+
+  if (/earthquake|quake|tremor|seismic|terremot|sism|scoss|magnitud/.test(text)) {
+    return 'EARTHQUAKES';
+  }
+  if (/alert|warning|allert|avvis|criticita/.test(text)) return 'ALERTS';
+  if (/weather|forecast|temperature|rain|storm|wind|meteo|prevision|piogg|tempor|vento/.test(text)) {
+    return 'WEATHER';
+  }
+  if (/official update|latest update|aggiornament|protezione civile/.test(text)) {
+    return 'UPDATES';
+  }
+  return 'AUTO';
+};
+
+const locationLabel = (location) =>
+  [location?.city, location?.region, location?.country]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(', ');
+
+const currentDateTimeFor = (language, timezone) => {
+  try {
+    return new Intl.DateTimeFormat(language === 'it' ? 'it-IT' : 'en-GB', {
+      dateStyle: 'full',
+      timeStyle: 'long',
+      ...(timezone ? { timeZone: timezone } : {})
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString();
+  }
+};
+
+/** Fills the variables supported by the dashboard's long-form prompt editor. */
+export const renderWebSearchPrompt = (template, {
+  language,
+  query,
+  location
+}) => {
+  const lang = normalizeLanguage(language);
+  const timezone = String(location?.timezone || 'UTC').trim() || 'UTC';
+  const place = locationLabel(location) || (lang === 'it' ? 'non specificata' : 'not specified');
+  const replacements = {
+    CURRENT_DATETIME: currentDateTimeFor(lang, timezone),
+    TIMEZONE: timezone,
+    USER_LANGUAGE: lang,
+    SEARCH_MODE: searchModeFor(query),
+    USER_QUERY: String(query || '').trim(),
+    REQUESTED_LOCATION: place,
+    USER_LOCATION: place
+  };
+
+  return Object.entries(replacements).reduce(
+    (result, [key, value]) => result.replaceAll(`{{${key}}}`, value),
+    String(template || '')
+  );
+};
+
+const MOBILE_OUTPUT_CONTRACT = {
+  en:
+    'NON-OVERRIDABLE MOBILE OUTPUT CONTRACT (takes priority over all editable instructions above):\n' +
+    '- The approved-source Web Search has already run. Answer with its findings; never say you lack live access, ask permission to search, offer another search, or send the user away to search manually.\n' +
+    '- Use 130 words or fewer. Open with the direct finding. Include only useful facts and, when appropriate, a 🛡 **What to do** heading with 2-4 short action bullets.\n' +
+    '- Never put URLs, Markdown links, domain names, citations, or a Sources section in the answer text. The app renders the consulted sources separately as tappable chips.\n' +
+    '- For earthquakes, report only recorded events and give magnitude, time, approximate location, depth when available, and approximate distance from the requested place. Never predict earthquakes.\n' +
+    '- If no relevant earthquake is found for the requested area and period, say exactly that no relevant events were found in the approved sources checked. Do not suggest checking INGV or another site manually.\n' +
+    '- End after the answer and safety actions. Never ask a follow-up question.',
+  it:
+    'CONTRATTO DI OUTPUT MOBILE NON MODIFICABILE (ha priorita su tutte le istruzioni modificabili sopra):\n' +
+    '- La ricerca nelle fonti approvate e gia stata eseguita. Rispondi con i risultati; non dire mai di non avere accesso a dati attuali, non chiedere il permesso di cercare, non offrire un\'altra ricerca e non rimandare l\'utente a cercare manualmente.\n' +
+    '- Usa al massimo 130 parole. Inizia dal risultato diretto. Includi solo fatti utili e, quando opportuno, il titolo 🛡 **Cosa fare** con 2-4 azioni brevi.\n' +
+    '- Non inserire mai URL, link Markdown, nomi di dominio, citazioni o una sezione Fonti nel testo. L\'app mostra separatamente le fonti consultate come pulsanti.\n' +
+    '- Per i terremoti riporta solo eventi registrati e indica magnitudo, orario, localita approssimativa, profondita se disponibile e distanza approssimativa dal luogo richiesto. Non prevedere mai terremoti.\n' +
+    '- Se non risulta alcun terremoto rilevante per la zona e il periodo richiesti, di che non sono stati trovati eventi rilevanti nelle fonti approvate consultate. Non suggerire di controllare manualmente INGV o altri siti.\n' +
+    '- Termina dopo la risposta e le azioni di sicurezza. Non fare mai una domanda finale.'
+};
+
+/**
+ * Final defence for stored/history text when a model repeats web citations in
+ * spite of the system contract. Source chips remain available separately.
+ */
+export const sanitizeWebSearchReply = (value) =>
+  String(value || '')
+    .replace(/\s*\(\[[^\]]+\]\(https?:\/\/[^)]+\)\)/gi, '')
+    .replace(/\[[^\]]+\]\(https?:\/\/[^)]+\)/gi, '')
+    .replace(/\n(?:#{1,6}\s*)?(?:Sources|Fonti)\s*:?\s*\n[\s\S]*$/i, '')
+    .replace(/\n+(?:Would you like|Do you want|Vuoi che|Desideri che)[^\n?]*\?\s*$/i, '')
+    .replace(
+      /\n+\(?[ \t]*(?:Se vuoi|Se desideri|If you want|If you'd like)[^\n]*\)?[ \t]*$/i,
+      ''
+    )
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+export const finalizeWebSearchReply = (value, { language, query } = {}) => {
+  const lang = normalizeLanguage(language);
+  const mode = searchModeFor(query);
+  let reply = sanitizeWebSearchReply(value)
+    .replace(/^[ \t]*Cosa fare[ \t]*:[ \t]*$/gim, '🛡 **Cosa fare**')
+    .replace(/^[ \t]*What to do[ \t]*:[ \t]*$/gim, '🛡 **What to do**');
+
+  const saysNoEarthquakes =
+    /non (?:risultano|sono stati trovati).*(?:terremot|eventi sismic)|nessun (?:evento|terremoto).*(?:zona|area|trovat)|no (?:relevant )?(?:earthquakes|seismic events).*found/i.test(
+      reply
+    );
+  if (mode === 'EARTHQUAKES' && saysNoEarthquakes) {
+    reply =
+      lang === 'it'
+        ? 'Non sono stati trovati terremoti rilevanti per la zona e il periodo richiesti nelle fonti approvate consultate.'
+        : 'No relevant earthquakes were found for the requested area and time period in the approved sources checked.';
+  }
+
+  return reply;
+};
+
+const fallbackSourcesFromQueries = ({ queries, allowedDomains }) => {
+  const normalizedQueries = (Array.isArray(queries) ? queries : [])
+    .map((query) => String(query || '').toLowerCase())
+    .filter(Boolean);
+
+  return allowedDomains
+    .filter((domain) =>
+      normalizedQueries.some((query) => query.includes(String(domain).toLowerCase()))
+    )
+    .slice(0, 5)
+    .map((domain) => ({
+      title: domain,
+      url: `https://${domain}/`,
+      domain
+    }));
+};
+
 const buildWebSearchSystemMessage = async ({
   language,
   caller,
   emergencyType,
+  query,
+  location,
   weatherContext = ''
 }) => {
   const lang = normalizeLanguage(language);
@@ -434,10 +573,14 @@ const buildWebSearchSystemMessage = async ({
   ]);
 
   const baseInstruction = promptConfig.systemPrompt || config.systemInstruction;
-  const webSearchInstruction =
+  const configuredWebSearchInstruction =
     (webSearchPromptSetting && webSearchPromptSetting[lang]) ||
     (webSearchPromptSetting && webSearchPromptSetting.en) ||
     '';
+  const webSearchInstruction = renderWebSearchPrompt(
+    configuredWebSearchInstruction,
+    { language: lang, query, location }
+  );
 
   const systemMessage = [
     baseInstruction,
@@ -448,6 +591,8 @@ const buildWebSearchSystemMessage = async ({
     // search. Placed after the search instruction so its "do not restate the
     // figures" rule is the last word on how to present them.
     ...(weatherContext ? ['', weatherContext] : []),
+    '',
+    MOBILE_OUTPUT_CONTRACT[lang] || MOBILE_OUTPUT_CONTRACT.en,
     '',
     'SELECTED LANGUAGE:',
     languageInstructionFor(lang),
@@ -533,6 +678,8 @@ export const requestAiReplyWithSearch = async ({
     language,
     caller,
     emergencyType,
+    query,
+    location,
     weatherContext
   });
 
@@ -668,8 +815,18 @@ export const requestAiReplyWithSearch = async ({
 
   const elapsedMs = Date.now() - startedAt;
   const usedWebSearch = responseUsedWebSearch(finalResponse);
-  const sources = usedWebSearch ? extractSources(finalResponse) : [];
+  let sources = usedWebSearch ? extractSources(finalResponse) : [];
+  if (usedWebSearch && sources.length === 0) {
+    // A no-result search can legitimately have no page citations even though
+    // it queried an approved official domain. Preserve that checked domain so
+    // the app can still show the user which source was searched.
+    sources = fallbackSourcesFromQueries({
+      queries: searchQueries,
+      allowedDomains
+    });
+  }
   const incompleteReason = finalResponse?.incomplete_details?.reason || '';
+  reply = finalizeWebSearchReply(reply, { language, query });
 
   if (!reply.trim()) {
     const diagnosis = describeTerminalResponse(finalResponse);

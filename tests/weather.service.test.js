@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   detectWeatherIntent,
   extractRequestedPlace,
+  placeMatchesLocation,
   getWeatherSnapshot,
   formatWeatherContext
 } from '../services/weather.service.js';
@@ -172,6 +173,45 @@ test('builds a snapshot from a real-shaped provider response', async (t) => {
   // Both endpoints were consulted, geocoding first.
   assert.equal(calls.length, 2);
   assert.match(calls[0], /geocoding-api/);
+});
+
+test('the city inserted into a current-location prompt keeps the GPS point', () => {
+  assert.equal(
+    placeMatchesLocation('Apice', {
+      city: 'Apice',
+      region: 'Campania',
+      latitude: 41.1201,
+      longitude: 14.9327
+    }),
+    true
+  );
+  assert.equal(
+    placeMatchesLocation('Naples', { city: 'Apice', region: 'Campania' }),
+    false
+  );
+});
+
+test('device coordinates go straight to the forecast instead of a city centroid', async (t) => {
+  const calls = [];
+  const restore = stubFetch(calls);
+  t.after(restore);
+
+  const snapshot = await getWeatherSnapshot({
+    location: {
+      city: 'Dhaka',
+      country: 'BD',
+      timezone: 'Asia/Dhaka',
+      latitude: 23.81031,
+      longitude: 90.41252
+    },
+    language: 'en'
+  });
+
+  assert.ok(snapshot);
+  assert.equal(calls.length, 1, 'exact GPS should not be geocoded again');
+  assert.match(calls[0], /api\.open-meteo\.com\/v1\/forecast/);
+  assert.match(calls[0], /latitude=23\.81031/);
+  assert.match(calls[0], /longitude=90\.41252/);
 });
 
 test('the hourly strip starts at the current hour, not at midnight', async (t) => {
