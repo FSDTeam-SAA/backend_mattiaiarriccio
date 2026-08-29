@@ -1,10 +1,14 @@
 import { Router } from 'express';
-import { requireAuth } from '../middlewares/auth.js';
+import { optionalAuth } from '../middlewares/auth.js';
 import { getAdConfig } from '../controllers/adConfig.controller.js';
 
 const router = Router();
 
-router.use(requireAuth('user'));
+// Optional auth: the controller already handles the anonymous case (ads on by
+// default) and only runs the premium check when a user is known. Requiring a
+// token here made the app's very first config fetch — which fires before login
+// — 401, and the client treats any failure as "no ads".
+router.use(optionalAuth());
 
 router.get('/', getAdConfig);
 
