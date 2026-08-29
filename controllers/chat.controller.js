@@ -18,6 +18,7 @@ import {
   detectWeatherIntent,
   extractRequestedPlace,
   placeMatchesLocation,
+  resolveLocation,
   getWeatherSnapshot,
   formatWeatherContext
 } from '../services/weather.service.js';
@@ -202,8 +203,9 @@ const parseChatRequest = async (req) => {
 
   // Fall back to the last location the app reported, so "and tomorrow?" still
   // knows where "here" is without the client resending it every message.
-  const location =
-    parseLocationInput(req.body) ||
+  const freshLocationInput = parseLocationInput(req.body);
+  const locationInput =
+    freshLocationInput ||
     (req.auth.user.lastLocation
       ? {
           city: req.auth.user.lastLocation.city || '',
@@ -212,6 +214,10 @@ const parseChatRequest = async (req) => {
           timezone: req.auth.user.lastLocation.timezone || ''
         }
       : null);
+  // Resolve a manually entered place once, before weather and Web Search split
+  // into separate paths. Both consumers now receive the same canonical city,
+  // region and country; GPS coordinates continue through unchanged.
+  const location = (await resolveLocation(locationInput)) || locationInput;
 
   return {
     requestedLanguage,
@@ -222,7 +228,7 @@ const parseChatRequest = async (req) => {
     effectiveEmergencyType,
     forceWebSearch,
     location,
-    freshLocation: parseLocationInput(req.body),
+    freshLocation: freshLocationInput ? location : null,
     aiQuery: buildAiQuery({
       conversation: conversation?.toObject(),
       latestMessage: message,
@@ -502,12 +508,20 @@ const resolveWeather = async ({ message, language, location }) => {
   // still answers the question.
   const requestedPlace = extractRequestedPlace(message);
   if (requestedPlace && !placeMatchesLocation(requestedPlace, location)) {
+    const requestedLocation =
+      (await resolveLocation({ city: requestedPlace })) || { city: requestedPlace };
     const snapshot = await getWeatherSnapshot({
-      location: { city: requestedPlace },
+      location: requestedLocation,
       language
     });
     if (snapshot) {
-      return { snapshot, needsLocation: false, asked: true, requestedPlace };
+      return {
+        snapshot,
+        needsLocation: false,
+        asked: true,
+        requestedPlace,
+        location: requestedLocation
+      };
     }
   }
 
@@ -523,8 +537,18 @@ const resolveWeather = async ({ message, language, location }) => {
     };
   }
 
-  const snapshot = await getWeatherSnapshot({ location, language });
-  return { snapshot, needsLocation: false, asked: true, requestedPlace };
+  const resolvedLocation = (await resolveLocation(location)) || location;
+  const snapshot = await getWeatherSnapshot({
+    location: resolvedLocation,
+    language
+  });
+  return {
+    snapshot,
+    needsLocation: false,
+    asked: true,
+    requestedPlace,
+    location: resolvedLocation
+  };
 };
 
 /**
@@ -636,6 +660,7 @@ export const sendChatMessage = catchAsync(async (req, res) => {
   });
   logWeatherDecision({ weather, location: chat.location });
   const weatherContext = buildWeatherContext(weather, chat.requestedLanguage);
+  const answerLocation = weather.location || chat.location;
 
   let aiResponse;
   if (webSearchDecision.search) {
@@ -645,7 +670,7 @@ export const sendChatMessage = catchAsync(async (req, res) => {
         language: chat.requestedLanguage,
         query: buildRoutedAiQuery(chat, routingDecision),
         caller: req.auth.user,
-        location: chat.location,
+        location: answerLocation,
         weatherContext
       });
 
@@ -796,6 +821,7 @@ export const sendChatMessageStream = async (req, res, next) => {
     });
     logWeatherDecision({ weather, location: chat.location });
     const weatherContext = buildWeatherContext(weather, chat.requestedLanguage);
+    const answerLocation = weather.location || chat.location;
 
     setSseHeaders(res);
     writeSseEvent(res, 'meta', {
@@ -831,7 +857,7 @@ export const sendChatMessageStream = async (req, res, next) => {
           language: chat.requestedLanguage,
           query: buildRoutedAiQuery(chat, routingDecision),
           caller: req.auth.user,
-          location: chat.location,
+          location: answerLocation,
           weatherContext,
           onStatus: async (state, detail = {}) => {
             // Drives the live-search indicator in the app. `queries` is what

@@ -4,6 +4,7 @@ import {
   detectWeatherIntent,
   extractRequestedPlace,
   placeMatchesLocation,
+  resolveLocation,
   getWeatherSnapshot,
   formatWeatherContext
 } from '../services/weather.service.js';
@@ -189,6 +190,90 @@ test('the city inserted into a current-location prompt keeps the GPS point', () 
     placeMatchesLocation('Naples', { city: 'Apice', region: 'Campania' }),
     false
   );
+});
+
+test('a bare Italian city is preferred over same-named foreign places', async (t) => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({
+        results: [
+          {
+            name: 'Roma',
+            admin1: 'Botosani County',
+            country: 'Romania',
+            country_code: 'RO',
+            latitude: 47.83333,
+            longitude: 26.6,
+            timezone: 'Europe/Bucharest'
+          },
+          {
+            name: 'Roma',
+            admin1: 'Lazio',
+            country: 'Italia',
+            country_code: 'IT',
+            latitude: 41.89193,
+            longitude: 12.51133,
+            timezone: 'Europe/Rome'
+          }
+        ]
+      })
+    };
+  };
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+
+  const location = await resolveLocation({ city: 'Roma' });
+
+  assert.equal(location.country, 'IT');
+  assert.equal(location.region, 'Lazio');
+  assert.equal(location.timezone, 'Europe/Rome');
+  assert.match(calls[0], /language=it/);
+});
+
+test('an explicitly qualified foreign place is not forced into Italy', async (t) => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    json: async () => ({
+      results: [
+        {
+          name: 'Roma',
+          admin1: 'Botosani County',
+          country: 'Romania',
+          country_code: 'RO',
+          latitude: 47.83333,
+          longitude: 26.6,
+          timezone: 'Europe/Bucharest'
+        },
+        {
+          name: 'Roma',
+          admin1: 'Lazio',
+          country: 'Italia',
+          country_code: 'IT',
+          latitude: 41.89193,
+          longitude: 12.51133,
+          timezone: 'Europe/Rome'
+        }
+      ]
+    })
+  });
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+
+  const location = await resolveLocation({ city: 'Roma, Romania' });
+
+  assert.equal(location.country, 'RO');
+  assert.equal(location.region, 'Botosani County');
 });
 
 test('device coordinates go straight to the forecast instead of a city centroid', async (t) => {

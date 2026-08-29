@@ -33,6 +33,19 @@ const GEOCODE_TTL_MS = 24 * 60 * 60_000;
 const forecastCache = new Map();
 const geocodeCache = new Map();
 
+const hasUsableCoordinates = (location) => {
+  const latitude = Number(location?.latitude);
+  const longitude = Number(location?.longitude);
+  return (
+    Number.isFinite(latitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    Number.isFinite(longitude) &&
+    longitude >= -180 &&
+    longitude <= 180
+  );
+};
+
 const readCache = (cache, key) => {
   const hit = cache.get(key);
   if (!hit) return null;
@@ -289,7 +302,10 @@ const geocodePlace = async ({ city, region, country }) => {
   const params = new URLSearchParams({
     name,
     count: '10',
-    language: 'en',
+    // Open-Meteo searches translated place names. Using Italian is important
+    // here: its English index does not return Rome for "Roma" or Milan for
+    // "Milano", and used to leave similarly named foreign towns at the top.
+    language: 'it',
     format: 'json'
   });
 
@@ -297,13 +313,20 @@ const geocodePlace = async ({ city, region, country }) => {
   const results = Array.isArray(data?.results) ? data.results : [];
   if (results.length === 0) return null;
 
-  // Prefer a hit in the country the device reported: "Springfield" and even
-  // "Valencia" exist in several countries, and the wrong one is worse than none.
+  // Prefer a hit in the country the device reported. For a bare manually typed
+  // name, prefer Italy because WeSafe is initially aimed at Italian users.
+  // A comma means the user qualified the place themselves ("Roma, Romania"),
+  // in which case the provider's ranked result wins instead.
   const wantedCountry = String(country || '').trim().toUpperCase();
+  const explicitlyQualified = /[,;/]/.test(name);
   const match =
     (wantedCountry.length === 2
       ? results.find((item) => String(item.country_code || '').toUpperCase() === wantedCountry)
-      : null) || results[0];
+      : null) ||
+    (!wantedCountry && !explicitlyQualified
+      ? results.find((item) => String(item.country_code || '').toUpperCase() === 'IT')
+      : null) ||
+    results[0];
 
   const place = {
     name: match.name || name,
@@ -317,6 +340,42 @@ const geocodePlace = async ({ city, region, country }) => {
 
   writeCache(geocodeCache, cacheKey, place, GEOCODE_TTL_MS);
   return place;
+};
+
+/**
+ * Canonicalizes one location before either weather or Web Search uses it.
+ *
+ * GPS locations already identify one exact point and are kept intact. Named
+ * locations are geocoded once into the same city/region/country/coordinates,
+ * preventing the weather card from showing one place while Web Search is
+ * biased toward another. Failure remains non-fatal: callers can keep using the
+ * original coarse input and still produce an answer.
+ */
+export const resolveLocation = async (location) => {
+  if (!location) return null;
+  if (hasUsableCoordinates(location)) return { ...location };
+
+  try {
+    const place = await geocodePlace(location);
+    if (!place) return null;
+
+    return {
+      city: place.name,
+      region: place.region,
+      country: place.countryCode,
+      timezone: String(location.timezone || place.timezone || ''),
+      latitude: place.latitude,
+      longitude: place.longitude
+    };
+  } catch (error) {
+    console.warn(
+      '[weather.service] location resolution failed:',
+      error?.name === 'AbortError'
+        ? `timed out after ${REQUEST_TIMEOUT_MS}ms`
+        : error?.message || error
+    );
+    return null;
+  }
 };
 
 /* ------------------------------------------------------------------ *
@@ -412,13 +471,7 @@ export const getWeatherSnapshot = async ({ location, language = 'en' } = {}) => 
 
   const latitude = Number(location.latitude);
   const longitude = Number(location.longitude);
-  const hasExactPoint =
-    Number.isFinite(latitude) &&
-    latitude >= -90 &&
-    latitude <= 90 &&
-    Number.isFinite(longitude) &&
-    longitude >= -180 &&
-    longitude <= 180;
+  const hasExactPoint = hasUsableCoordinates(location);
 
   const cacheKey = [
     hasExactPoint ? latitude.toFixed(4) : '',
