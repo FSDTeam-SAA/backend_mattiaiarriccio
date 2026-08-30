@@ -249,7 +249,9 @@ export const consumeUserUsage = async ({ user, kind, now = new Date() }) => {
           }
         }
       }
-    ]
+    ],
+    // Mongoose 9 refuses an array update unless the caller opts in explicitly.
+    { updatePipeline: true }
   );
 
   const filter = {
