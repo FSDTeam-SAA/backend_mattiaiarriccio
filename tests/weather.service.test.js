@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   detectWeatherIntent,
+  detectWeatherFollowUp,
+  parseForecastWindow,
   extractRequestedPlace,
   placeMatchesLocation,
   resolveLocation,
@@ -51,6 +53,36 @@ test('a trigger word does not fire inside a longer word', () => {
   assert.equal(detectWeatherIntent('consolerai i feriti'), false);
 });
 
+test('forecast windows are deterministic in English and Italian', () => {
+  assert.deepEqual(parseForecastWindow('What will the weather be like?'), {
+    mode: 'rolling',
+    hours: 24,
+    explicit: false
+  });
+  assert.deepEqual(parseForecastWindow('over the next 48 hours'), {
+    mode: 'rolling',
+    hours: 48,
+    explicit: true
+  });
+  assert.equal(
+    parseForecastWindow('today and over the next 48 hours').hours,
+    48
+  );
+  assert.equal(parseForecastWindow('nelle prossime 72 ore').hours, 72);
+  assert.equal(parseForecastWindow('per i prossimi 2 giorni').hours, 48);
+  assert.equal(parseForecastWindow('next 999 hours').hours, 168);
+  assert.equal(parseForecastWindow('weather today').mode, 'today');
+  assert.equal(parseForecastWindow('meteo domani').mode, 'tomorrow');
+  assert.equal(parseForecastWindow('questo fine settimana').mode, 'weekend');
+});
+
+test('only concise temporal messages qualify as weather follow-ups', () => {
+  assert.equal(detectWeatherFollowUp('and tomorrow?'), true);
+  assert.equal(detectWeatherFollowUp('what about the next 48 hours?'), true);
+  assert.equal(detectWeatherFollowUp('e per le prossime 24 ore?'), true);
+  assert.equal(detectWeatherFollowUp('what should I do today?'), false);
+});
+
 /* ------------------------------------------------------------------ *
  * The place the question names
  *
@@ -62,6 +94,11 @@ test('a place named in the question is picked up', () => {
   assert.equal(extractRequestedPlace('weather in italy'), 'italy');
   assert.equal(extractRequestedPlace('What is the weather in New York?'), 'new york');
   assert.equal(extractRequestedPlace('will it rain in Rome tomorrow'), 'rome');
+  assert.equal(
+    extractRequestedPlace('What will the weather in Rome be like over the next 48 hours?'),
+    'rome'
+  );
+  assert.equal(extractRequestedPlace('meteo a Roma nelle prossime 48 ore'), 'roma');
   assert.equal(extractRequestedPlace('che tempo fa a Milano'), 'milano');
 });
 
@@ -100,48 +137,113 @@ const geocodeResponse = {
   ]
 };
 
-const forecastResponse = {
-  timezone: 'Asia/Dhaka',
-  current: {
-    time: '2026-08-19T14:00',
-    temperature_2m: 33.4,
-    apparent_temperature: 41.2,
-    relative_humidity_2m: 78,
-    precipitation: 0.4,
-    weather_code: 95,
-    wind_speed_10m: 18.3,
-    wind_gusts_10m: 64.8,
-    visibility: 8000,
-    is_day: 1
-  },
-  hourly: {
-    time: [
-      '2026-08-19T12:00', '2026-08-19T13:00', '2026-08-19T14:00',
-      '2026-08-19T15:00', '2026-08-19T16:00', '2026-08-19T17:00',
-      '2026-08-19T18:00', '2026-08-19T19:00'
-    ],
-    temperature_2m: [32.1, 32.9, 33.4, 33.0, 32.2, 31.4, 30.6, 29.9],
-    weather_code: [3, 80, 95, 95, 81, 63, 3, 2],
-    precipitation_probability: [20, 45, 80, 75, 60, 40, 20, 10]
-  },
-  daily: {
-    time: ['2026-08-19', '2026-08-20', '2026-08-21', '2026-08-22'],
-    weather_code: [95, 80, 3, 2],
-    temperature_2m_max: [33.8, 32.5, 31.9, 32.4],
-    temperature_2m_min: [27.1, 26.8, 26.4, 26.9],
-    precipitation_probability_max: [80, 55, 20, 10],
-    precipitation_sum: [12.4, 5.1, 0, 0]
-  }
+const localHoursFrom = (start, count) => {
+  const startMs = Date.parse(`${start}Z`);
+  return Array.from({ length: count }, (_, index) =>
+    new Date(startMs + index * 60 * 60_000).toISOString().slice(0, 16)
+  );
 };
 
+const localDatesFrom = (start, count) => {
+  const startMs = Date.parse(`${start}T00:00:00Z`);
+  return Array.from({ length: count }, (_, index) =>
+    new Date(startMs + index * 24 * 60 * 60_000).toISOString().slice(0, 10)
+  );
+};
+
+const makeForecastResponse = ({
+  start = '2026-08-19T00:00',
+  hours = 192,
+  currentTime = '2026-08-19T14:15',
+  currentCode = 95,
+  currentFeelsLike = 41.2,
+  currentGust = 64.8
+} = {}) => {
+  const time = localHoursFrom(start, hours);
+  const temperature = time.map((_, index) => 28 + (index % 9) * 0.7);
+  const apparent = temperature.map((value) => value + 2);
+  const codes = Array(hours).fill(2);
+  const pops = Array(hours).fill(10);
+  const precipitation = Array(hours).fill(0);
+  const windSpeed = Array(hours).fill(14);
+  const windGust = Array(hours).fill(24);
+  const visibility = Array(hours).fill(10_000);
+  const isDay = time.map((value) => {
+    const hour = Number(value.slice(11, 13));
+    return hour >= 6 && hour < 18 ? 1 : 0;
+  });
+
+  // The current hour retains the severe measurements used by the original
+  // regression, followed by a short storm/rain period.
+  const currentIndex = time.indexOf('2026-08-19T14:00');
+  if (currentIndex >= 0) {
+    temperature[currentIndex] = 33.4;
+    apparent[currentIndex] = 41.2;
+    codes[currentIndex] = 95;
+    pops[currentIndex] = 80;
+    precipitation[currentIndex] = 0.4;
+    windGust[currentIndex] = 64.8;
+
+    codes[currentIndex + 1] = 95;
+    pops[currentIndex + 1] = 75;
+    precipitation[currentIndex + 1] = 5.2;
+    windGust[currentIndex + 1] = 48;
+    codes[currentIndex + 2] = 81;
+    pops[currentIndex + 2] = 60;
+    precipitation[currentIndex + 2] = 2.5;
+  }
+
+  const dates = localDatesFrom('2026-08-19', 7);
+  return {
+    timezone: 'Asia/Dhaka',
+    current: {
+      time: currentTime,
+      temperature_2m: 33.4,
+      apparent_temperature: currentFeelsLike,
+      relative_humidity_2m: 78,
+      precipitation: 0.4,
+      weather_code: currentCode,
+      wind_speed_10m: 18.3,
+      wind_gusts_10m: currentGust,
+      visibility: 8000,
+      is_day: 1
+    },
+    hourly: {
+      time,
+      temperature_2m: temperature,
+      apparent_temperature: apparent,
+      weather_code: codes,
+      precipitation_probability: pops,
+      precipitation,
+      wind_speed_10m: windSpeed,
+      wind_gusts_10m: windGust,
+      visibility,
+      is_day: isDay
+    },
+    daily: {
+      time: dates,
+      weather_code: [95, 80, 3, 2, 1, 61, 0],
+      temperature_2m_max: [33.8, 32.5, 31.9, 32.4, 31.5, 30.9, 32.2],
+      temperature_2m_min: [27.1, 26.8, 26.4, 26.9, 26.2, 25.9, 26.3],
+      precipitation_probability_max: [80, 55, 20, 10, 5, 60, 0],
+      precipitation_sum: [12.4, 5.1, 0, 0, 0, 4.2, 0],
+      wind_gusts_10m_max: [64.8, 42, 30, 28, 24, 38, 20],
+      sunrise: dates.map((date) => `${date}T05:35`),
+      sunset: dates.map((date) => `${date}T18:25`)
+    }
+  };
+};
+
+const forecastResponse = makeForecastResponse();
+
 /** Serves the two upstream endpoints from the fixtures above. */
-const stubFetch = (calls = []) => {
+const stubFetch = (calls = [], weatherResponse = forecastResponse) => {
   const original = globalThis.fetch;
   globalThis.fetch = async (url) => {
     calls.push(String(url));
     const body = String(url).includes('geocoding-api')
       ? geocodeResponse
-      : forecastResponse;
+      : weatherResponse;
     return { ok: true, status: 200, statusText: 'OK', json: async () => body };
   };
   return () => {
@@ -309,11 +411,31 @@ test('the hourly strip starts at the current hour, not at midnight', async (t) =
   });
 
   assert.equal(snapshot.hourly[0].time, '2026-08-19T14:00');
-  assert.equal(snapshot.hourly.length, 6);
+  assert.equal(snapshot.hourly.length, 24);
   assert.equal(snapshot.hourly[0].precipitationChance, 80);
-  assert.equal(snapshot.daily.length, 3);
+  assert.equal(snapshot.daily.length, 7);
   assert.equal(snapshot.daily[0].temperatureMax, 34);
   assert.equal(snapshot.daily[0].temperatureMin, 27);
+});
+
+test('an explicit 48-hour request remains complete across day boundaries', async (t) => {
+  const restore = stubFetch();
+  t.after(restore);
+
+  const snapshot = await getWeatherSnapshot({
+    location: { city: 'Dhaka', country: 'BD' },
+    language: 'en',
+    forecastWindow: parseForecastWindow(
+      'What will the weather be like today and over the next 48 hours?'
+    )
+  });
+
+  assert.equal(snapshot.requestedHours, 48);
+  assert.equal(snapshot.availableHours, 48);
+  assert.equal(snapshot.complete, true);
+  assert.equal(snapshot.forecastStartsAt, '2026-08-19T14:00');
+  assert.equal(snapshot.forecastEndsAt, '2026-08-21T13:00');
+  assert.equal(new Set(snapshot.hourly.map((hour) => hour.time.slice(0, 10))).size, 3);
 });
 
 test('safety flags are derived from the measurements, not from prose', async (t) => {

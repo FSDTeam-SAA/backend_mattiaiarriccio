@@ -19,7 +19,8 @@ const enforceMessageLimit = enforceDailyLimit('messages');
  * A brand-new conversation is started only when the request carries no existing
  * conversationId. In that case we also count it against the daily CHAT limit;
  * otherwise the chat-limit middleware is skipped (only the message limit runs).
- * Premium users are skipped automatically inside enforceDailyLimit.
+ * Tier-specific limits are resolved inside enforceDailyLimit; a configured
+ * value of 0 means unlimited while usage is still counted.
  */
 const enforceChatLimitForNewConversation = (req, res, next) => {
   const conversationId = String(

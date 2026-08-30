@@ -25,6 +25,7 @@ import { isPremiumUser } from '../services/premium.service.js';
 import { getSetting } from '../services/settings.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { parseArrayInput } from '../utils/requestParsers.js';
+import { enforceCustomChecklistLimit } from '../services/checklistQuota.service.js';
 
 const checklistMainImageUrl = (checklist = {}) => {
   const iconUrl = String(checklist.iconUrl || '').trim();
@@ -519,6 +520,11 @@ export const createChecklist = catchAsync(async (req, res) => {
   if (!title) {
     throw new ApiError(StatusCodes.BAD_REQUEST, 'title is required');
   }
+
+  // Enforce before resolving/uploading media so a blocked create does not pay
+  // for an orphaned Cloudinary upload. Personalized template copies use a
+  // separate path and intentionally do not consume this allowance.
+  await enforceCustomChecklistLimit(req.auth.user);
 
   const itemsInput = parseArrayInput(req.body.items) || [];
   const iconUrl = await resolveImageUrl({

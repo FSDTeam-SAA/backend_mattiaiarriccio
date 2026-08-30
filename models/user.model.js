@@ -168,6 +168,19 @@ const userSchema = new mongoose.Schema(
       ),
       default: () => ({ date: '', messages: 0, chats: 0, webSearches: 0 })
     },
+    weeklyUsage: {
+      type: new mongoose.Schema(
+        {
+          // UTC Monday in YYYY-MM-DD form. The quota service owns rollover.
+          weekStart: { type: String, default: '' },
+          messages: { type: Number, default: 0 },
+          chats: { type: Number, default: 0 },
+          webSearches: { type: Number, default: 0 }
+        },
+        { _id: false }
+      ),
+      default: () => ({ weekStart: '', messages: 0, chats: 0, webSearches: 0 })
+    },
     // Last approximate location the app reported, reused as `user_location` for
     // web searches so follow-up questions ("and tomorrow?") keep their area
     // without the app having to resend it on every message. Coarse by design:

@@ -1,16 +1,16 @@
 import { StatusCodes } from 'http-status-codes';
 import ApiError from '../utils/ApiError.js';
-import User from '../models/user.model.js';
-import { getSetting } from '../services/settings.service.js';
-import { isPremiumUser } from '../services/premium.service.js';
-
-const todayStr = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+import {
+  applyUsageSnapshotToAuthUser,
+  consumeUserUsage,
+  createUsageLimitError
+} from '../services/usageLimit.service.js';
 
 /**
- * Per-day usage gate for free users. Premium users skip entirely.
- * `kind` is 'messages' or 'chats'; the matching Settings key supplies the limit.
- * A configured limit of 0 means "unlimited" (use adsEnabled/other gates to block).
- * On exceed: 429 with { code: 'DAILY_LIMIT_REACHED', details: { limit, used } }.
+ * Backwards-compatible name for the chat quota middleware. It now consumes the
+ * current UTC daily AND weekly buckets and applies tier-specific limits. The
+ * legacy `chats` counter remains a Free daily new-conversation anti-abuse cap;
+ * `messages` is the actual chatbot request allowance for both tiers.
  */
 export const enforceDailyLimit = (kind) => async (req, res, next) => {
   try {
@@ -19,43 +19,17 @@ export const enforceDailyLimit = (kind) => async (req, res, next) => {
       throw new ApiError(StatusCodes.UNAUTHORIZED, 'Authentication required');
     }
 
-    if (isPremiumUser(user)) {
-      return next();
+    const quota = await consumeUserUsage({ user, kind });
+    applyUsageSnapshotToAuthUser(req.auth.user, quota);
+
+    if (!quota.allowed) {
+      throw createUsageLimitError(quota);
     }
 
-    const limitKey = kind === 'chats' ? 'freeDailyChatLimit' : 'freeDailyMessageLimit';
-    const limit = await getSetting(limitKey);
-
-    const today = todayStr();
-    // NOTE: this writes the whole dailyUsage subdocument back, so every counter
-    // living on it must be carried across. webSearches is incremented later in
-    // the request by webSearch.service.js; omitting it here silently reset the
-    // live-search quota on every message.
-    const current =
-      user.dailyUsage && user.dailyUsage.date === today
-        ? {
-            date: today,
-            messages: user.dailyUsage.messages || 0,
-            chats: user.dailyUsage.chats || 0,
-            webSearches: user.dailyUsage.webSearches || 0
-          }
-        : { date: today, messages: 0, chats: 0, webSearches: 0 };
-
-    const used = current[kind] || 0;
-
-    if (limit > 0 && used >= limit) {
-      const err = new ApiError(
-        StatusCodes.TOO_MANY_REQUESTS,
-        'Daily limit reached. Upgrade to premium for unlimited access.'
-      );
-      err.code = 'DAILY_LIMIT_REACHED';
-      err.details = { limit, used, kind };
-      throw err;
-    }
-
-    current[kind] = used + 1;
-    await User.updateOne({ _id: user._id }, { $set: { dailyUsage: current } });
-    req.auth.user.dailyUsage = current;
+    req.usageQuota = {
+      ...(req.usageQuota || {}),
+      [kind]: quota
+    };
 
     next();
   } catch (error) {

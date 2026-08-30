@@ -16,11 +16,20 @@ export const getWebSearchUsage = catchAsync(async (req, res) => {
   const requestedDays = parseIntegerInput(req.query.days) ?? 30;
   const days = Math.min(Math.max(requestedDays, 1), 90);
 
-  const [summary, enabled, freeLimit, premiumLimit] = await Promise.all([
+  const [
+    summary,
+    enabled,
+    freeLimit,
+    premiumLimit,
+    freeWeeklyLimit,
+    premiumWeeklyLimit
+  ] = await Promise.all([
     getWebSearchUsageSummary({ days }),
     getSetting('webSearchEnabled'),
     getSetting('webSearchFreeDailyLimit'),
-    getSetting('webSearchPremiumDailyLimit')
+    getSetting('webSearchPremiumDailyLimit'),
+    getSetting('webSearchFreeWeeklyLimit'),
+    getSetting('webSearchPremiumWeeklyLimit')
   ]);
 
   sendSuccess(res, {
@@ -29,7 +38,9 @@ export const getWebSearchUsage = catchAsync(async (req, res) => {
       ...summary,
       enabled,
       freeDailyLimit: freeLimit,
-      premiumDailyLimit: premiumLimit
+      premiumDailyLimit: premiumLimit,
+      freeWeeklyLimit,
+      premiumWeeklyLimit
     }
   });
 });

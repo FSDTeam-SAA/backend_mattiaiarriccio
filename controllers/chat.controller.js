@@ -11,13 +11,16 @@ import {
 } from '../services/ai.service.js';
 import {
   shouldConsiderWebSearch,
-  checkWebSearchQuota,
-  recordWebSearch
+  reserveWebSearchQuota,
+  recordWebSearch,
+  refundWebSearchQuota
 } from '../services/webSearch.service.js';
 import {
   detectWeatherIntent,
   extractRequestedPlace,
   placeMatchesLocation,
+  parseForecastWindow,
+  detectWeatherFollowUp,
   resolveLocation,
   getWeatherSnapshot,
   formatWeatherContext
@@ -388,13 +391,16 @@ const resolveWebSearchDecision = async ({
     return { search: false, limited: false, reason: 'no-trigger-keyword-matched' };
   }
 
-  const quota = await checkWebSearchQuota(user);
+  // Reserve before calling the provider. The shared quota service performs one
+  // conditional daily+weekly increment, so parallel live requests cannot all
+  // pass the same final slot. The reservation is refunded if no search occurs.
+  const quota = await reserveWebSearchQuota(user);
   if (!quota.allowed) {
     return {
       search: false,
       limited: true,
       quota,
-      reason: `daily-quota-exhausted (${quota.used}/${quota.limit})`
+      reason: `${quota.blockedWindow || 'usage'}-quota-exhausted (${quota.used}/${quota.limit})`
     };
   }
 
@@ -406,6 +412,22 @@ const resolveWebSearchDecision = async ({
       ? 'dedicated-live-information-action'
       : 'live-trigger-matched'
   };
+};
+
+const refundUnusedWebSearchReservation = async ({ decision, userId }) => {
+  if (!decision?.search || !decision?.quota?.reservationConsumed || !userId) {
+    return;
+  }
+  try {
+    await refundWebSearchQuota(userId);
+  } catch (error) {
+    // A refund is bookkeeping; never turn a usable fallback answer into an
+    // error because its counter could not be rolled back.
+    console.error(
+      '[chat.controller] failed to refund unused Web Search reservation:',
+      error?.message || error
+    );
+  }
 };
 
 /**
@@ -497,22 +519,52 @@ const rememberLocation = async (userId, location) => {
  * Returns `needsLocation` when the question needs a place and we have none.
  * That case is a UI affordance in the app, not a paragraph of apology.
  */
-const resolveWeather = async ({ message, language, location }) => {
-  if (!detectWeatherIntent(message)) {
+const latestWeatherSnapshot = (conversation) => {
+  const messages = conversation?.messages || [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const snapshot = messages[index]?.weather;
+    if (snapshot?.place && snapshot?.current) return snapshot;
+  }
+  return null;
+};
+
+const locationFromWeatherSnapshot = (snapshot) => {
+  if (!snapshot?.place) return null;
+  return {
+    city: snapshot.place.name || '',
+    region: snapshot.place.region || '',
+    country: snapshot.place.countryCode || snapshot.place.country || '',
+    timezone: snapshot.timezone || ''
+  };
+};
+
+const resolveWeather = async ({ message, language, location, conversation }) => {
+  const previousWeather = latestWeatherSnapshot(conversation);
+  const isContinuation =
+    !detectWeatherIntent(message) &&
+    Boolean(previousWeather) &&
+    detectWeatherFollowUp(message);
+  if (!detectWeatherIntent(message) && !isContinuation) {
     return { snapshot: null, needsLocation: false, asked: false };
   }
+
+  const forecastWindow = parseForecastWindow(message);
+  const effectiveLocation = isContinuation
+    ? locationFromWeatherSnapshot(previousWeather) || location
+    : location;
 
   // A place named in the question outranks the device's own: "weather in
   // Italy" asked from Dhaka must not be answered with Dhaka's conditions.
   // If it does not geocode it was not a place, and the device location below
   // still answers the question.
   const requestedPlace = extractRequestedPlace(message);
-  if (requestedPlace && !placeMatchesLocation(requestedPlace, location)) {
+  if (requestedPlace && !placeMatchesLocation(requestedPlace, effectiveLocation)) {
     const requestedLocation =
       (await resolveLocation({ city: requestedPlace })) || { city: requestedPlace };
     const snapshot = await getWeatherSnapshot({
       location: requestedLocation,
-      language
+      language,
+      forecastWindow
     });
     if (snapshot) {
       return {
@@ -525,7 +577,7 @@ const resolveWeather = async ({ message, language, location }) => {
     }
   }
 
-  if (!location) {
+  if (!effectiveLocation) {
     // Asking for a location the user did not want to talk about would be a
     // non-sequitur, so the prompt is only offered when the question was about
     // where they are.
@@ -537,10 +589,12 @@ const resolveWeather = async ({ message, language, location }) => {
     };
   }
 
-  const resolvedLocation = (await resolveLocation(location)) || location;
+  const resolvedLocation =
+    (await resolveLocation(effectiveLocation)) || effectiveLocation;
   const snapshot = await getWeatherSnapshot({
     location: resolvedLocation,
-    language
+    language,
+    forecastWindow
   });
   return {
     snapshot,
@@ -584,6 +638,8 @@ const logWeatherDecision = ({ weather, location }) => {
     `[weather] ${weather.snapshot ? 'DATA' : weather.needsLocation ? 'NO-LOCATION' : 'LOOKUP-FAILED'} ` +
       `place="${weather.requestedPlace || location?.city || location?.region || location?.country || 'n/a'}" ` +
       `${weather.requestedPlace ? 'from=message ' : ''}` +
+      `hours=${weather.snapshot?.availableHours ?? 0}/${weather.snapshot?.requestedHours ?? 0} ` +
+      `complete=${weather.snapshot?.complete ?? false} ` +
       `flags=${weather.snapshot?.safetyFlags?.join(',') || 'none'}`
   );
 };
@@ -656,7 +712,8 @@ export const sendChatMessage = catchAsync(async (req, res) => {
   const weather = await resolveWeather({
     message: chat.message,
     language: chat.requestedLanguage,
-    location: chat.location
+    location: chat.location,
+    conversation: chat.conversation
   });
   logWeatherDecision({ weather, location: chat.location });
   const weatherContext = buildWeatherContext(weather, chat.requestedLanguage);
@@ -676,11 +733,19 @@ export const sendChatMessage = catchAsync(async (req, res) => {
 
       if (aiResponse.usedWebSearch) {
         await recordWebSearch({
-          userId: req.auth.user._id,
           premium: webSearchDecision.quota?.premium
+        });
+      } else {
+        await refundUnusedWebSearchReservation({
+          decision: webSearchDecision,
+          userId: req.auth.user._id
         });
       }
     } catch (error) {
+      await refundUnusedWebSearchReservation({
+        decision: webSearchDecision,
+        userId: req.auth.user._id
+      });
       // Live data failed; never let that cost the user an answer.
       console.error(
         '[chat.controller] web search path failed, falling back to standard reply:',
@@ -760,6 +825,10 @@ export const sendChatMessage = catchAsync(async (req, res) => {
       // full answer; the app shows an upgrade note alongside it.
       liveInfoLimited: Boolean(webSearchDecision.limited),
       liveInfoLimit: webSearchDecision.quota?.limit ?? null,
+      liveInfoWindow: webSearchDecision.quota?.blockedWindow ?? null,
+      liveInfoUsed: webSearchDecision.quota?.used ?? null,
+      liveInfoResetAt: webSearchDecision.quota?.resetAt ?? null,
+      liveInfoTier: webSearchDecision.quota?.tier ?? null,
       ...routingMetadata(routingDecision)
     }
   });
@@ -817,7 +886,8 @@ export const sendChatMessageStream = async (req, res, next) => {
     const weather = await resolveWeather({
       message: chat.message,
       language: chat.requestedLanguage,
-      location: chat.location
+      location: chat.location,
+      conversation: chat.conversation
     });
     logWeatherDecision({ weather, location: chat.location });
     const weatherContext = buildWeatherContext(weather, chat.requestedLanguage);
@@ -835,6 +905,10 @@ export const sendChatMessageStream = async (req, res, next) => {
         !webSearchDecision.search,
       liveInfoLimited: Boolean(webSearchDecision.limited),
       liveInfoLimit: webSearchDecision.quota?.limit ?? null,
+      liveInfoWindow: webSearchDecision.quota?.blockedWindow ?? null,
+      liveInfoUsed: webSearchDecision.quota?.used ?? null,
+      liveInfoResetAt: webSearchDecision.quota?.resetAt ?? null,
+      liveInfoTier: webSearchDecision.quota?.tier ?? null,
       ...routeMeta
     });
 
@@ -873,11 +947,19 @@ export const sendChatMessageStream = async (req, res, next) => {
 
         if (aiResponse.usedWebSearch) {
           await recordWebSearch({
-            userId: req.auth.user._id,
             premium: webSearchDecision.quota?.premium
+          });
+        } else {
+          await refundUnusedWebSearchReservation({
+            decision: webSearchDecision,
+            userId: req.auth.user._id
           });
         }
       } catch (error) {
+        await refundUnusedWebSearchReservation({
+          decision: webSearchDecision,
+          userId: req.auth.user._id
+        });
         console.error(
           `[chat.controller] streaming web search failed (code=${
             error?.code || 'n/a'
@@ -948,6 +1030,10 @@ export const sendChatMessageStream = async (req, res, next) => {
       weatherNeedsLocation: weather.needsLocation,
       liveInfoLimited: Boolean(webSearchDecision.limited),
       liveInfoLimit: webSearchDecision.quota?.limit ?? null,
+      liveInfoWindow: webSearchDecision.quota?.blockedWindow ?? null,
+      liveInfoUsed: webSearchDecision.quota?.used ?? null,
+      liveInfoResetAt: webSearchDecision.quota?.resetAt ?? null,
+      liveInfoTier: webSearchDecision.quota?.tier ?? null,
       ...routeMeta
     });
     res.end();

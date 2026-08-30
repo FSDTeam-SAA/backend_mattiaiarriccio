@@ -30,6 +30,17 @@ const REQUEST_TIMEOUT_MS = 6000;
 const FORECAST_TTL_MS = 10 * 60_000;
 const GEOCODE_TTL_MS = 24 * 60 * 60_000;
 
+/**
+ * One week is the largest rolling window exposed by chat. Fetching that one
+ * reusable horizon lets a cached 24-hour answer satisfy a later 48-hour
+ * question without another provider call or, worse, returning the short
+ * projection from cache.
+ */
+const DEFAULT_FORECAST_HOURS = 24;
+const MAX_FORECAST_HOURS = 168;
+const DAILY_FORECAST_DAYS = 7;
+
+// Raw provider responses are cached, never request-specific snapshots.
 const forecastCache = new Map();
 const geocodeCache = new Map();
 
@@ -155,8 +166,9 @@ const NOT_A_PLACE = new Set([
  *  tomorrow" must geocode "Rome", not "Rome tomorrow". */
 const PLACE_TERMINATORS = new Set([
   ...NOT_A_PLACE,
-  'and', 'or', 'right', 'currently', 'please', 'is', 'are', 'will', 'e', 'o',
-  'adesso', 'ora', 'attuale', 'attualmente'
+  'and', 'or', 'right', 'currently', 'please', 'is', 'are', 'will', 'be', 'like',
+  'for', 'over', 'during', 'through', 'until', 'from', 'e', 'o', 'nelle', 'nella',
+  'nel', 'nei', 'durante', 'fino', 'adesso', 'ora', 'attuale', 'attualmente'
 ]);
 
 export const extractRequestedPlace = (text) => {
@@ -180,6 +192,85 @@ export const extractRequestedPlace = (text) => {
   }
 
   return null;
+};
+
+/* ------------------------------------------------------------------ *
+ * 1a. Requested forecast window
+ * ------------------------------------------------------------------ */
+
+const HOUR_UNITS = '(?:h|hr|hrs|hour|hours|ora|ore)';
+const DAY_UNITS = '(?:d|day|days|giorno|giorni)';
+
+const clampForecastHours = (value) =>
+  Math.min(MAX_FORECAST_HOURS, Math.max(1, Math.trunc(value)));
+
+/**
+ * Converts the user's wording into a deterministic projection instruction.
+ * Calendar windows are resolved only after the provider tells us the place's
+ * local date; rolling windows can be resolved immediately.
+ */
+export const parseForecastWindow = (text) => {
+  const normalized = normalizeForMatch(text);
+
+  const hourMatch = normalized.match(
+    new RegExp(`\\b(\\d{1,4})\\s*${HOUR_UNITS}\\b`, 'u')
+  );
+  if (hourMatch) {
+    return {
+      mode: 'rolling',
+      hours: clampForecastHours(Number(hourMatch[1]) || DEFAULT_FORECAST_HOURS),
+      explicit: true
+    };
+  }
+
+  const dayMatch = normalized.match(
+    new RegExp(`\\b(\\d{1,4})\\s*${DAY_UNITS}\\b`, 'u')
+  );
+  if (dayMatch) {
+    return {
+      mode: 'rolling',
+      hours: clampForecastHours((Number(dayMatch[1]) || 1) * 24),
+      explicit: true
+    };
+  }
+
+  if (/\b(tomorrow|domani)\b/u.test(normalized)) {
+    return { mode: 'tomorrow', hours: 24, explicit: true };
+  }
+  if (/\b(weekend|fine settimana)\b/u.test(normalized)) {
+    return { mode: 'weekend', hours: 48, explicit: true };
+  }
+  if (/\b(today|tonight|oggi|stasera)\b/u.test(normalized)) {
+    return { mode: 'today', hours: DEFAULT_FORECAST_HOURS, explicit: true };
+  }
+
+  return {
+    mode: 'rolling',
+    hours: DEFAULT_FORECAST_HOURS,
+    explicit: false
+  };
+};
+
+/** Conservative conversational continuation: "and tomorrow?" should reuse
+ * the previous weather card, while an unrelated "what should I do today?"
+ * must not silently become a forecast request. */
+export const detectWeatherFollowUp = (text) => {
+  const normalized = normalizeForMatch(text);
+  const window = parseForecastWindow(text);
+  if (!normalized || !window.explicit) return false;
+
+  const allowed = new Set([
+    'and', 'or', 'what', 'how', 'about', 'then', 'for', 'the', 'next', 'over',
+    'later', 'please', 'will', 'it', 'be', 'like', 'today', 'tonight',
+    'tomorrow', 'weekend', 'hours', 'hour', 'hrs', 'hr', 'h', 'days', 'day', 'd',
+    'e', 'o', 'che', 'come', 'invece', 'poi', 'per', 'il', 'la', 'le', 'i',
+    'prossime', 'prossimi', 'prossima', 'prossimo', 'ore', 'ora', 'giorni',
+    'giorno', 'oggi', 'stasera', 'domani', 'fine', 'settimana'
+  ]);
+
+  return normalized
+    .split(' ')
+    .every((word) => /^\d{1,4}$/u.test(word) || allowed.has(word));
 };
 
 /**
@@ -389,70 +480,257 @@ const fetchForecast = async ({ latitude, longitude, timezone }) => {
     current:
       'temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,' +
       'weather_code,wind_speed_10m,wind_gusts_10m,visibility,is_day',
-    hourly: 'temperature_2m,weather_code,precipitation_probability',
+    hourly:
+      'temperature_2m,apparent_temperature,weather_code,precipitation_probability,' +
+      'precipitation,wind_speed_10m,wind_gusts_10m,visibility,is_day',
     daily:
       'weather_code,temperature_2m_max,temperature_2m_min,' +
-      'precipitation_probability_max,precipitation_sum',
+      'precipitation_probability_max,precipitation_sum,wind_gusts_10m_max,' +
+      'sunrise,sunset',
     timezone: timezone || 'auto',
-    forecast_days: '4'
+    // `forecast_hours` is relative to the current hour. Unlike forecast_days,
+    // it does not make callers discard the already elapsed part of today.
+    forecast_hours: String(MAX_FORECAST_HOURS),
+    forecast_days: String(DAILY_FORECAST_DAYS)
   });
 
   return getJson(`${FORECAST_URL}?${params.toString()}`);
 };
 
-/**
- * The next few hours, starting from the current hour rather than from midnight.
- *
- * Open-Meteo returns the whole day from 00:00 in the location's own timezone, so
- * without this the app would show a strip that begins in the past.
- */
-const buildHourly = (data, lang, limit = 6) => {
+const localHourIso = (value) => {
+  const match = String(value || '').match(/^(\d{4}-\d{2}-\d{2}T\d{2})/u);
+  return match ? `${match[1]}:00` : '';
+};
+
+const localDate = (value) => String(value || '').slice(0, 10);
+
+const addLocalDays = (date, amount) => {
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return '';
+  parsed.setUTCDate(parsed.getUTCDate() + amount);
+  return parsed.toISOString().slice(0, 10);
+};
+
+const weekdayForLocalDate = (date) => {
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.getUTCDay();
+};
+
+/** Normalize every usable provider timestep once. Projection happens later. */
+const buildHourly = (data, lang) => {
   const times = data?.hourly?.time || [];
   const temps = data?.hourly?.temperature_2m || [];
+  const apparent = data?.hourly?.apparent_temperature || [];
   const codes = data?.hourly?.weather_code || [];
   const pops = data?.hourly?.precipitation_probability || [];
+  const precipitation = data?.hourly?.precipitation || [];
+  const windSpeeds = data?.hourly?.wind_speed_10m || [];
+  const windGusts = data?.hourly?.wind_gusts_10m || [];
+  const visibility = data?.hourly?.visibility || [];
+  const isDay = data?.hourly?.is_day || [];
   if (times.length === 0) return [];
 
-  const nowIso = String(data?.current?.time || '');
-  let start = times.findIndex((time) => String(time) >= nowIso);
-  if (start === -1) start = 0;
+  // Current observations can be timestamped at :15/:30/:45. Compare their
+  // containing hour, not the exact minute, so the current hourly timestep is
+  // not accidentally skipped.
+  const nowHour = localHourIso(data?.current?.time);
+  const start = nowHour
+    ? times.findIndex((time) => localHourIso(time) >= nowHour)
+    : 0;
+  if (start === -1) return [];
 
   const out = [];
-  for (let i = start; i < times.length && out.length < limit; i += 1) {
-    const { icon, label } = describeCode(codes[i], lang);
+  for (
+    let i = Math.max(0, start);
+    i < times.length && out.length < MAX_FORECAST_HOURS;
+    i += 1
+  ) {
+    if (!String(times[i] || '').trim() || !Number.isFinite(temps[i])) continue;
+
+    const code = Number(codes[i]);
+    const { icon, label } = describeCode(code, lang);
+    const flags = buildSafetyFlags({
+      code,
+      temperature: temps[i],
+      apparent: apparent[i],
+      windGust: windGusts[i],
+      windSpeed: windSpeeds[i],
+      precipitation: precipitation[i],
+      visibility: visibility[i]
+    });
+
     out.push({
       time: times[i],
       temperature: round(temps[i]),
-      weatherCode: codes[i] ?? null,
+      feelsLike: round(apparent[i]),
+      weatherCode: Number.isFinite(code) ? code : null,
       icon,
       condition: label,
-      precipitationChance: round(pops[i])
+      precipitationChance: round(pops[i]),
+      precipitation: round(precipitation[i], 1),
+      windSpeed: round(windSpeeds[i]),
+      windGust: round(windGusts[i]),
+      visibility: round(visibility[i]),
+      isDay: isDay[i] !== 0,
+      safetyFlags: flags
     });
   }
   return out;
 };
 
-const buildDaily = (data, lang, limit = 3) => {
+const resolveForecastProjection = (hours, currentTime, requestedWindow) => {
+  const window = requestedWindow || parseForecastWindow('');
+  const firstTime = hours[0]?.time || '';
+  const reference = localHourIso(currentTime) || localHourIso(firstTime);
+  const date = localDate(reference);
+  const hourOfDay = Number(reference.slice(11, 13));
+
+  if (window.mode === 'today' && date) {
+    const requestedHours = Number.isFinite(hourOfDay)
+      ? Math.max(1, 24 - hourOfDay)
+      : DEFAULT_FORECAST_HOURS;
+    return {
+      requestedHours,
+      hours: hours.filter((hour) => localDate(hour.time) === date)
+    };
+  }
+
+  if (window.mode === 'tomorrow' && date) {
+    const tomorrow = addLocalDays(date, 1);
+    return {
+      requestedHours: 24,
+      hours: hours.filter((hour) => localDate(hour.time) === tomorrow)
+    };
+  }
+
+  if (window.mode === 'weekend' && date) {
+    const weekday = weekdayForLocalDate(date);
+    if (weekday !== null) {
+      const daysUntilSaturday = weekday === 0 ? -1 : (6 - weekday + 7) % 7;
+      const targetDates =
+        weekday === 0
+          ? [date]
+          : [
+              addLocalDays(date, daysUntilSaturday),
+              addLocalDays(date, daysUntilSaturday + 1)
+            ];
+      const remainingToday = Number.isFinite(hourOfDay)
+        ? Math.max(1, 24 - hourOfDay)
+        : 24;
+      const requestedHours = weekday === 0
+        ? remainingToday
+        : weekday === 6
+          ? remainingToday + 24
+          : 48;
+
+      return {
+        requestedHours,
+        hours: hours.filter((hour) => targetDates.includes(localDate(hour.time)))
+      };
+    }
+  }
+
+  const requestedHours = clampForecastHours(
+    Number(window.hours) || DEFAULT_FORECAST_HOURS
+  );
+  return { requestedHours, hours: hours.slice(0, requestedHours) };
+};
+
+const buildDaily = (data, lang, limit = DAILY_FORECAST_DAYS) => {
   const dates = data?.daily?.time || [];
   const codes = data?.daily?.weather_code || [];
   const maxes = data?.daily?.temperature_2m_max || [];
   const mins = data?.daily?.temperature_2m_min || [];
   const pops = data?.daily?.precipitation_probability_max || [];
+  const precipitation = data?.daily?.precipitation_sum || [];
+  const gusts = data?.daily?.wind_gusts_10m_max || [];
+  const sunrises = data?.daily?.sunrise || [];
+  const sunsets = data?.daily?.sunset || [];
 
   const out = [];
   for (let i = 0; i < dates.length && out.length < limit; i += 1) {
-    const { icon, label } = describeCode(codes[i], lang);
+    const code = Number(codes[i]);
+    const { icon, label } = describeCode(code, lang);
     out.push({
       date: dates[i],
-      weatherCode: codes[i] ?? null,
+      weatherCode: Number.isFinite(code) ? code : null,
       icon,
       condition: label,
       temperatureMax: round(maxes[i]),
       temperatureMin: round(mins[i]),
-      precipitationChance: round(pops[i])
+      precipitationChance: round(pops[i]),
+      precipitationSum: round(precipitation[i], 1),
+      windGustMax: round(gusts[i]),
+      sunrise: sunrises[i] || null,
+      sunset: sunsets[i] || null
     });
   }
   return out;
+};
+
+const peakForHazard = (flag, hour) => {
+  switch (flag) {
+    case 'strongWind':
+      return hour.windGust ?? hour.windSpeed;
+    case 'heavyRain':
+    case 'snowIce':
+      return hour.precipitation;
+    case 'extremeHeat':
+      return hour.feelsLike ?? hour.temperature;
+    case 'extremeCold':
+    case 'freezing':
+      return hour.feelsLike ?? hour.temperature;
+    case 'lowVisibility':
+      return hour.visibility;
+    case 'thunderstorm':
+      return hour.weatherCode;
+    default:
+      return null;
+  }
+};
+
+const mergePeak = (flag, current, candidate) => {
+  if (!Number.isFinite(candidate)) return current;
+  if (!Number.isFinite(current)) return candidate;
+  return ['extremeCold', 'freezing', 'lowVisibility'].includes(flag)
+    ? Math.min(current, candidate)
+    : Math.max(current, candidate);
+};
+
+/** Consecutive hazardous hours become one actionable interval. */
+const buildUpcomingHazards = (hours) => {
+  const flags = [...new Set(hours.flatMap((hour) => hour.safetyFlags || []))];
+  const hazards = [];
+
+  for (const flag of flags) {
+    let active = null;
+    for (const hour of hours) {
+      if ((hour.safetyFlags || []).includes(flag)) {
+        const candidate = peakForHazard(flag, hour);
+        if (!active) {
+          active = {
+            flag,
+            startsAt: hour.time,
+            endsAt: hour.time,
+            peakValue: Number.isFinite(candidate) ? candidate : null
+          };
+        } else {
+          active.endsAt = hour.time;
+          active.peakValue = mergePeak(flag, active.peakValue, candidate);
+        }
+      } else if (active) {
+        hazards.push(active);
+        active = null;
+      }
+    }
+    if (active) hazards.push(active);
+  }
+
+  return hazards
+    .sort((a, b) => a.startsAt.localeCompare(b.startsAt) || a.flag.localeCompare(b.flag))
+    .map(({ peakValue, ...hazard }) =>
+      Number.isFinite(peakValue) ? { ...hazard, peakValue } : hazard
+    );
 };
 
 /**
@@ -465,25 +743,17 @@ const buildDaily = (data, lang, limit = 3) => {
  *
  * @returns {Promise<object|null>} snapshot consumed by the app's weather card
  */
-export const getWeatherSnapshot = async ({ location, language = 'en' } = {}) => {
+export const getWeatherSnapshot = async ({
+  location,
+  language = 'en',
+  forecastWindow = parseForecastWindow('')
+} = {}) => {
   const lang = String(language).startsWith('it') ? 'it' : 'en';
   if (!location) return null;
 
   const latitude = Number(location.latitude);
   const longitude = Number(location.longitude);
   const hasExactPoint = hasUsableCoordinates(location);
-
-  const cacheKey = [
-    hasExactPoint ? latitude.toFixed(4) : '',
-    hasExactPoint ? longitude.toFixed(4) : '',
-    String(location.city || '').toLowerCase(),
-    String(location.region || '').toLowerCase(),
-    String(location.country || '').toLowerCase(),
-    lang
-  ].join('|');
-
-  const cached = readCache(forecastCache, cacheKey);
-  if (cached) return cached;
 
   try {
     // Use the phone's measured point for weather. Web Search still receives
@@ -509,11 +779,30 @@ export const getWeatherSnapshot = async ({ location, language = 'en' } = {}) => 
       return null;
     }
 
-    const data = await fetchForecast({
-      latitude: place.latitude,
-      longitude: place.longitude,
-      timezone: location.timezone || place.timezone
-    });
+    // Cache the provider's full reusable horizon. Language and the requested
+    // projection are intentionally absent from this key: both are applied to
+    // the raw data below on every request.
+    const timezone = String(location.timezone || place.timezone || 'auto');
+    const cacheKey = [
+      Number(place.latitude).toFixed(4),
+      Number(place.longitude).toFixed(4),
+      timezone
+    ].join('|');
+    let data = readCache(forecastCache, cacheKey);
+    if (!data) {
+      data = await fetchForecast({
+        latitude: place.latitude,
+        longitude: place.longitude,
+        timezone
+      });
+
+      const fetchedCurrent = data?.current;
+      if (!fetchedCurrent || !Number.isFinite(fetchedCurrent.temperature_2m)) {
+        console.warn('[weather.service] forecast response carried no current conditions');
+        return null;
+      }
+      writeCache(forecastCache, cacheKey, data, FORECAST_TTL_MS);
+    }
 
     const current = data?.current;
     if (!current || !Number.isFinite(current.temperature_2m)) {
@@ -523,8 +812,25 @@ export const getWeatherSnapshot = async ({ location, language = 'en' } = {}) => 
 
     const code = Number(current.weather_code);
     const { icon, label } = describeCode(code, lang);
+    const allHours = buildHourly(data, lang);
+    const projection = resolveForecastProjection(
+      allHours,
+      current.time,
+      forecastWindow
+    );
+    const hourly = projection.hours;
+    const upcomingHazards = buildUpcomingHazards(hourly);
+    const currentSafetyFlags = buildSafetyFlags({
+      code,
+      temperature: current.temperature_2m,
+      apparent: current.apparent_temperature,
+      windGust: current.wind_gusts_10m,
+      windSpeed: current.wind_speed_10m,
+      precipitation: current.precipitation,
+      visibility: current.visibility
+    });
 
-    const snapshot = {
+    return {
       provider: 'open-meteo',
       place: {
         name: place.name,
@@ -534,7 +840,9 @@ export const getWeatherSnapshot = async ({ location, language = 'en' } = {}) => 
       },
       observedAt: current.time || new Date().toISOString(),
       timezone: data?.timezone || place.timezone || '',
-      units: { temperature: '°C', wind: 'km/h', precipitation: 'mm' },
+      // ASCII escape prevents the degree symbol from being double-encoded by
+      // deployments that do not preserve source-file encoding.
+      units: { temperature: '\u00B0C', wind: 'km/h', precipitation: 'mm' },
       current: {
         temperature: round(current.temperature_2m),
         feelsLike: round(current.apparent_temperature),
@@ -542,26 +850,27 @@ export const getWeatherSnapshot = async ({ location, language = 'en' } = {}) => 
         precipitation: round(current.precipitation, 1),
         windSpeed: round(current.wind_speed_10m),
         windGust: round(current.wind_gusts_10m),
+        visibility: round(current.visibility),
         weatherCode: Number.isFinite(code) ? code : null,
         icon,
         condition: label,
         isDay: current.is_day !== 0
       },
-      hourly: buildHourly(data, lang),
+      hourly,
       daily: buildDaily(data, lang),
-      safetyFlags: buildSafetyFlags({
-        code,
-        temperature: current.temperature_2m,
-        apparent: current.apparent_temperature,
-        windGust: current.wind_gusts_10m,
-        windSpeed: current.wind_speed_10m,
-        precipitation: current.precipitation,
-        visibility: current.visibility
-      })
+      // Backward compatible: these remain conditions active now. Future risks
+      // have their own timed representation so tomorrow's storm is not labelled
+      // as if it were already overhead.
+      safetyFlags: currentSafetyFlags,
+      forecastSafetyFlags: [...new Set(upcomingHazards.map((hazard) => hazard.flag))],
+      upcomingHazards,
+      requestedHours: projection.requestedHours,
+      availableHours: hourly.length,
+      forecastStartsAt: hourly[0]?.time || null,
+      forecastEndsAt: hourly.at(-1)?.time || null,
+      complete: hourly.length >= projection.requestedHours,
+      forecastMode: forecastWindow?.mode || 'rolling'
     };
-
-    writeCache(forecastCache, cacheKey, snapshot, FORECAST_TTL_MS);
-    return snapshot;
   } catch (error) {
     console.error(
       '[weather.service] lookup failed:',
@@ -600,19 +909,66 @@ const FLAG_NOTES = {
   }
 };
 
+const summarizeHourlyForecast = (hourly) => {
+  const byDate = new Map();
+
+  for (const hour of hourly || []) {
+    const date = localDate(hour.time);
+    if (!date) continue;
+    const summary = byDate.get(date) || {
+      first: hour.time,
+      last: hour.time,
+      temperatures: [],
+      conditions: [],
+      precipitationChance: null,
+      windGust: null
+    };
+    summary.last = hour.time;
+    if (Number.isFinite(hour.temperature)) summary.temperatures.push(hour.temperature);
+    if (hour.condition && !summary.conditions.includes(hour.condition)) {
+      summary.conditions.push(hour.condition);
+    }
+    if (Number.isFinite(hour.precipitationChance)) {
+      summary.precipitationChance = Math.max(
+        summary.precipitationChance ?? 0,
+        hour.precipitationChance
+      );
+    }
+    if (Number.isFinite(hour.windGust)) {
+      summary.windGust = Math.max(summary.windGust ?? 0, hour.windGust);
+    }
+    byDate.set(date, summary);
+  }
+
+  return [...byDate.entries()].map(([date, summary]) => {
+    const pieces = [];
+    if (summary.temperatures.length) {
+      pieces.push(
+        `${Math.min(...summary.temperatures)}-${Math.max(...summary.temperatures)}\u00B0C`
+      );
+    }
+    if (summary.conditions.length) {
+      pieces.push(summary.conditions.slice(0, 3).join(' / '));
+    }
+    if (Number.isFinite(summary.precipitationChance)) {
+      pieces.push(`precipitation chance up to ${summary.precipitationChance}%`);
+    }
+    if (Number.isFinite(summary.windGust)) {
+      pieces.push(`gusts up to ${summary.windGust} km/h`);
+    }
+    return `- ${date} ${String(summary.first).slice(11, 16)}-${String(summary.last).slice(11, 16)}: ${pieces.join('; ')}`;
+  });
+};
+
 /**
- * The measured facts, handed to the model as context.
- *
- * This block is why the assistant can stop hedging: it is no longer guessing at
- * conditions it could not read off a bulletin page, so it can spend its whole
- * answer on safety advice. The instruction not to repeat the numbers matters -
- * the app renders them as a card directly above the text, and an answer that
- * restates them is the wall of prose this whole change is replacing.
+ * The model gets one compact line per covered local date, not 168 raw rows.
+ * This is enough to answer the requested period and time safety advice without
+ * inflating every weather prompt.
  */
 export const formatWeatherContext = (snapshot, language = 'en') => {
   if (!snapshot) return '';
   const lang = String(language).startsWith('it') ? 'it' : 'en';
-  const { place, current, daily, safetyFlags } = snapshot;
+  const { place, current, safetyFlags, hourly, upcomingHazards } = snapshot;
 
   const where = [place.name, place.region, place.country]
     .filter(Boolean)
@@ -620,40 +976,55 @@ export const formatWeatherContext = (snapshot, language = 'en') => {
     .join(', ');
 
   const lines = [
-    `MEASURED WEATHER DATA for ${where} (source: Open-Meteo, observed ${snapshot.observedAt}):`,
-    `- Condition: ${current.condition}`,
-    `- Temperature: ${current.temperature}°C (feels like ${current.feelsLike}°C)`,
-    `- Wind: ${current.windSpeed} km/h, gusts ${current.windGust} km/h`,
-    `- Humidity: ${current.humidity}%`,
-    `- Precipitation now: ${current.precipitation} mm`
+    `MEASURED WEATHER DATA for ${where} (source: Open-Meteo, observed ${snapshot.observedAt}, timezone ${snapshot.timezone || 'local'}):`,
+    `- Condition now: ${current.condition}`,
+    `- Temperature now: ${current.temperature}\u00B0C (feels like ${current.feelsLike}\u00B0C)`,
+    `- Wind now: ${current.windSpeed} km/h, gusts ${current.windGust} km/h`,
+    `- Humidity now: ${current.humidity}%`,
+    `- Precipitation now: ${current.precipitation} mm`,
+    `- Requested forecast coverage: ${snapshot.availableHours ?? hourly?.length ?? 0}/${snapshot.requestedHours ?? hourly?.length ?? 0} hours, ` +
+      `${snapshot.forecastStartsAt || 'unavailable'} through ${snapshot.forecastEndsAt || 'unavailable'} ` +
+      `(${snapshot.complete === false ? 'PARTIAL' : 'complete'})`
   ];
 
-  if (daily?.length) {
-    const today = daily[0];
-    lines.push(
-      `- Today: ${today.condition}, ${today.temperatureMin}°C to ${today.temperatureMax}°C, ` +
-        `${today.precipitationChance}% chance of precipitation`
-    );
+  const forecastSummary = summarizeHourlyForecast(hourly);
+  if (forecastSummary.length) {
+    lines.push('FORECAST SUMMARY BY LOCAL DATE:', ...forecastSummary);
   }
 
   const notes = FLAG_NOTES[lang] || FLAG_NOTES.en;
   if (safetyFlags?.length) {
     lines.push(
-      `- Safety-relevant conditions: ${safetyFlags
+      `- Active safety-relevant conditions: ${safetyFlags
         .map((flag) => notes[flag] || flag)
         .join('; ')}`
     );
   } else {
-    lines.push('- Safety-relevant conditions: none, conditions are ordinary.');
+    lines.push('- Active safety-relevant conditions: none.');
+  }
+
+  if (upcomingHazards?.length) {
+    lines.push('UPCOMING SAFETY-RELEVANT PERIODS:');
+    for (const hazard of upcomingHazards.slice(0, 8)) {
+      lines.push(
+        `- ${notes[hazard.flag] || hazard.flag}: ${hazard.startsAt} through ${hazard.endsAt}`
+      );
+    }
+    if (upcomingHazards.length > 8) {
+      lines.push(`- ${upcomingHazards.length - 8} additional intervals are shown in the card.`);
+    }
+  } else {
+    lines.push('- Upcoming safety-relevant periods: none in the covered forecast.');
   }
 
   lines.push(
     '',
     'HOW TO USE THIS DATA:',
     '- These figures are verified. State them as fact; never say you cannot access current weather.',
-    '- The app already shows these numbers in a weather card directly above your text. Do NOT list them again.',
-    '- Write 2-4 short lines of safety advice specific to the conditions above, and nothing else.',
-    '- Never tell the user to go and check a weather site for the current conditions - they already have them.',
+    '- Answer the exact requested forecast period with a concise overview of changes, timing, and safety implications.',
+    '- The app already shows the detailed hourly figures in a weather card. Do NOT list them again hour by hour.',
+    '- If coverage is PARTIAL, clearly state how many forecast hours were available.',
+    '- Never tell the user to go and check a weather site for these conditions - they already have them.',
     '- If an official alert is active for this area, say so briefly; otherwise do not invent one.'
   );
 

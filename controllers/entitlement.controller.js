@@ -10,8 +10,14 @@ import {
   getResolvedPaywallContent
 } from '../services/settings.service.js';
 import { resolveRequestLanguage } from '../services/language.service.js';
+import {
+  getCurrentUsageSnapshot,
+  getUsageLimits,
+  USAGE_KINDS
+} from '../services/usageLimit.service.js';
+import { getCustomChecklistQuota } from '../services/checklistQuota.service.js';
 
-const todayStr = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+const publicLimit = (value) => (Number(value) === 0 ? null : Number(value));
 
 /**
  * GET /api/v1/me/entitlements
@@ -25,47 +31,68 @@ const todayStr = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC
  *   limits: { messages: number|null, chats: number|null, webSearches: number|null },
  *   usage:  { date: 'YYYY-MM-DD', messages: number, chats: number, webSearches: number }
  * }
- * null limit = unlimited. messages/chats are null for premium; webSearches is
- * capped for both tiers and is null only when the admin sets that limit to 0.
+ * null limit = unlimited. The legacy `limits` and `usage` fields remain daily
+ * scalars for deployed apps; weekly and total-resource information is additive.
  */
 export const getEntitlements = catchAsync(async (req, res) => {
   const user = (await recomputeTier(req.auth.user._id)) || req.auth.user;
   const snapshot = entitlementSnapshot(user);
   const premium = isPremiumUser(user);
 
-  // Premium users have no daily message/chat caps; report unlimited as null.
-  // Web search is capped for BOTH tiers (premium just gets a bigger allowance),
-  // so its limit is read either way; 0 means unlimited and is reported as null.
-  const webSearchLimitRaw = await getSetting(
-    premium ? 'webSearchPremiumDailyLimit' : 'webSearchFreeDailyLimit'
-  );
-  const webSearchLimit = webSearchLimitRaw === 0 ? null : webSearchLimitRaw;
-
-  let limits = { messages: null, chats: null, webSearches: webSearchLimit };
-  if (!premium) {
-    const [messageLimit, chatLimit] = await Promise.all([
-      getSetting('freeDailyMessageLimit'),
-      getSetting('freeDailyChatLimit')
+  const [messageLimits, chatLimits, webSearchLimits, checklistQuota] =
+    await Promise.all([
+      getUsageLimits(USAGE_KINDS.MESSAGES, premium),
+      getUsageLimits(USAGE_KINDS.CHATS, premium),
+      getUsageLimits(USAGE_KINDS.WEB_SEARCHES, premium),
+      getCustomChecklistQuota(user)
     ]);
-    limits = {
-      messages: messageLimit,
-      chats: chatLimit,
-      webSearches: webSearchLimit
-    };
-  }
+  const current = getCurrentUsageSnapshot(user);
 
-  // Roll over: if the stored usage date is not today (UTC), report zeros.
-  const today = todayStr();
-  const stored = user.dailyUsage;
-  const usage =
-    stored && stored.date === today
-      ? {
-          date: today,
-          messages: stored.messages || 0,
-          chats: stored.chats || 0,
-          webSearches: stored.webSearches || 0
-        }
-      : { date: today, messages: 0, chats: 0, webSearches: 0 };
+  // V1: retain the exact scalar daily shape older Flutter releases parse.
+  const limits = {
+    messages: publicLimit(messageLimits.daily),
+    chats: publicLimit(chatLimits.daily),
+    webSearches: publicLimit(webSearchLimits.daily)
+  };
+  const usage = { ...current.daily };
+  const weeklyLimits = {
+    messages: publicLimit(messageLimits.weekly),
+    chats: publicLimit(chatLimits.weekly),
+    webSearches: publicLimit(webSearchLimits.weekly)
+  };
+  const weeklyUsage = { ...current.weekly };
+
+  const limitsV2 = {
+    messages: {
+      daily: publicLimit(messageLimits.daily),
+      weekly: publicLimit(messageLimits.weekly)
+    },
+    chats: {
+      daily: publicLimit(chatLimits.daily),
+      weekly: publicLimit(chatLimits.weekly)
+    },
+    webSearches: {
+      daily: publicLimit(webSearchLimits.daily),
+      weekly: publicLimit(webSearchLimits.weekly)
+    },
+    customChecklists: {
+      total: publicLimit(checklistQuota.limit)
+    }
+  };
+  const usageV2 = {
+    timezone: 'UTC',
+    daily: {
+      ...current.daily,
+      resetsAt: current.windows.dayResetAt
+    },
+    weekly: {
+      ...current.weekly,
+      resetsAt: current.windows.weekResetAt
+    },
+    totals: {
+      customChecklists: checklistQuota.used
+    }
+  };
 
   sendSuccess(res, {
     message: 'Entitlements fetched successfully',
@@ -75,7 +102,16 @@ export const getEntitlements = catchAsync(async (req, res) => {
       premiumSource: snapshot.premiumSource,
       adFree: snapshot.adFree,
       limits,
-      usage
+      usage,
+      weeklyLimits,
+      weeklyUsage,
+      customChecklist: {
+        limit: publicLimit(checklistQuota.limit),
+        used: checklistQuota.used,
+        remaining: checklistQuota.remaining
+      },
+      limitsV2,
+      usageV2
     }
   });
 });

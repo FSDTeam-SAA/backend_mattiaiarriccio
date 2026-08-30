@@ -8,6 +8,9 @@ import ApiError from '../utils/ApiError.js';
  *
  * One-line summary of each key + default:
  * - freeDailyMessageLimit (20)   : max AI messages/day for free users
+ * - freeWeeklyMessageLimit (0)   : max AI messages/week for free users (0 = unlimited)
+ * - premiumDailyMessageLimit (0) : max AI messages/day for premium users (0 = unlimited)
+ * - premiumWeeklyMessageLimit (0): max AI messages/week for premium users (0 = unlimited)
  * - freeDailyChatLimit (5)       : max new chats/day for free users
  * - freePrompt (string)          : system prompt used for free-tier chat
  * - premiumPrompt (string)       : system prompt used for premium-tier chat
@@ -22,6 +25,10 @@ import ApiError from '../utils/ApiError.js';
  * - webSearchEnabled (true)      : master switch for OpenAI native Web Search
  * - webSearchFreeDailyLimit (2)  : max live searches/day for free users (0 = unlimited)
  * - webSearchPremiumDailyLimit (20): max live searches/day for premium users (0 = unlimited)
+ * - webSearchFreeWeeklyLimit (0) : max live searches/week for free users (0 = unlimited)
+ * - webSearchPremiumWeeklyLimit (0): max live searches/week for premium users (0 = unlimited)
+ * - freeCustomChecklistLimit (0) : max user-created checklists for free users (0 = unlimited)
+ * - premiumCustomChecklistLimit (0): max user-created checklists for premium users (0 = unlimited)
  * - webSearchContextSize ('low') : OpenAI search_context_size; the main cost lever
  * - webSearchPrompt (object)     : { en, it } dedicated prompt controlling how live
  *                                  results are combined with WeSafe safety guidance
@@ -32,6 +39,9 @@ import ApiError from '../utils/ApiError.js';
  */
 export const DEFAULT_SETTINGS = {
   freeDailyMessageLimit: 20,
+  freeWeeklyMessageLimit: 0,
+  premiumDailyMessageLimit: 0,
+  premiumWeeklyMessageLimit: 0,
   freeDailyChatLimit: 5,
   freePrompt:
     'You are WeSafe AI, a calm and concise safety assistant. Give clear, step-by-step emergency guidance. Keep answers short and practical for free users.',
@@ -67,6 +77,10 @@ export const DEFAULT_SETTINGS = {
   webSearchEnabled: true,
   webSearchFreeDailyLimit: 2,
   webSearchPremiumDailyLimit: 20,
+  webSearchFreeWeeklyLimit: 0,
+  webSearchPremiumWeeklyLimit: 0,
+  freeCustomChecklistLimit: 0,
+  premiumCustomChecklistLimit: 0,
   webSearchContextSize: 'low',
   webSearchSectionContent: {
     en: {
@@ -288,6 +302,18 @@ const VALIDATORS = {
     if (!isInteger(v) || v < 0) throw 'freeDailyMessageLimit must be an integer >= 0';
     return v;
   },
+  freeWeeklyMessageLimit: (v) => {
+    if (!isInteger(v) || v < 0) throw 'freeWeeklyMessageLimit must be an integer >= 0';
+    return v;
+  },
+  premiumDailyMessageLimit: (v) => {
+    if (!isInteger(v) || v < 0) throw 'premiumDailyMessageLimit must be an integer >= 0';
+    return v;
+  },
+  premiumWeeklyMessageLimit: (v) => {
+    if (!isInteger(v) || v < 0) throw 'premiumWeeklyMessageLimit must be an integer >= 0';
+    return v;
+  },
   freeDailyChatLimit: (v) => {
     if (!isInteger(v) || v < 0) throw 'freeDailyChatLimit must be an integer >= 0';
     return v;
@@ -353,6 +379,26 @@ const VALIDATORS = {
   webSearchPremiumDailyLimit: (v) => {
     if (!isInteger(v) || v < 0)
       throw 'webSearchPremiumDailyLimit must be an integer >= 0 (0 = unlimited)';
+    return v;
+  },
+  webSearchFreeWeeklyLimit: (v) => {
+    if (!isInteger(v) || v < 0)
+      throw 'webSearchFreeWeeklyLimit must be an integer >= 0 (0 = unlimited)';
+    return v;
+  },
+  webSearchPremiumWeeklyLimit: (v) => {
+    if (!isInteger(v) || v < 0)
+      throw 'webSearchPremiumWeeklyLimit must be an integer >= 0 (0 = unlimited)';
+    return v;
+  },
+  freeCustomChecklistLimit: (v) => {
+    if (!isInteger(v) || v < 0)
+      throw 'freeCustomChecklistLimit must be an integer >= 0 (0 = unlimited)';
+    return v;
+  },
+  premiumCustomChecklistLimit: (v) => {
+    if (!isInteger(v) || v < 0)
+      throw 'premiumCustomChecklistLimit must be an integer >= 0 (0 = unlimited)';
     return v;
   },
   webSearchContextSize: (v) => {
@@ -505,6 +551,25 @@ export const invalidateSettingsCache = (key) => {
 export const getSettingKeys = () => Object.keys(DEFAULT_SETTINGS);
 
 /**
+ * Validates one setting without touching MongoDB. Exported so callers that save
+ * several keys can validate the complete patch before the first write occurs.
+ */
+export const normalizeSettingValue = (key, value) => {
+  if (!(key in DEFAULT_SETTINGS)) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, `Unknown setting key: ${key}`);
+  }
+
+  const validator = VALIDATORS[key];
+  if (!validator) return value;
+
+  try {
+    return validator(value);
+  } catch (validationMessage) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, String(validationMessage));
+  }
+};
+
+/**
  * Returns the value for a single key (cached). Falls back to the default if the
  * key has never been written to the DB.
  */
@@ -544,19 +609,7 @@ export const getAllSettings = async () => {
  * Validates and persists a setting, then invalidates its cache entry.
  */
 export const updateSetting = async (key, value, adminId = null) => {
-  if (!(key in DEFAULT_SETTINGS)) {
-    throw new ApiError(StatusCodes.BAD_REQUEST, `Unknown setting key: ${key}`);
-  }
-
-  const validator = VALIDATORS[key];
-  let normalized = value;
-  if (validator) {
-    try {
-      normalized = validator(value);
-    } catch (validationMessage) {
-      throw new ApiError(StatusCodes.BAD_REQUEST, String(validationMessage));
-    }
-  }
+  const normalized = normalizeSettingValue(key, value);
 
   const doc = await AppSetting.findByIdAndUpdate(
     key,
@@ -573,8 +626,15 @@ export const updateSetting = async (key, value, adminId = null) => {
  * Updates several settings at once (used by the admin "save section" actions).
  */
 export const updateSettings = async (patch, adminId = null) => {
-  const results = {};
+  // Validate the whole patch first. Previously an invalid later key could leave
+  // earlier keys persisted even though the API returned a 400 response.
+  const normalizedPatch = {};
   for (const [key, value] of Object.entries(patch || {})) {
+    normalizedPatch[key] = normalizeSettingValue(key, value);
+  }
+
+  const results = {};
+  for (const [key, value] of Object.entries(normalizedPatch)) {
     const doc = await updateSetting(key, value, adminId);
     results[key] = doc.value;
   }

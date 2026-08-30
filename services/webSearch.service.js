@@ -1,11 +1,16 @@
-import User from '../models/user.model.js';
 import ApprovedDomain, {
   MAX_ALLOWED_DOMAINS
 } from '../models/approvedDomain.model.js';
 import WebSearchUsage from '../models/webSearchUsage.model.js';
 import { getSetting } from './settings.service.js';
-import { isPremiumUser } from './premium.service.js';
 import { normalizeLanguage } from './aiPrompts.js';
+import {
+  applyUsageSnapshotToAuthUser,
+  consumeUserUsage,
+  getUserUsageQuota,
+  refundUserUsage,
+  USAGE_KINDS
+} from './usageLimit.service.js';
 
 const todayStr = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
 
@@ -115,40 +120,70 @@ export const getAllowedDomains = async () => {
  * ------------------------------------------------------------------ */
 
 /**
- * Reads the caller's remaining live-search allowance. A limit of 0 means
- * unlimited, matching the convention already used by freeDailyMessageLimit.
+ * Converts the shared daily+weekly quota shape to the legacy fields used by the
+ * chat controller, while retaining the richer fields for new clients/logging.
+ */
+const formatWebSearchQuota = (quota) => {
+  const selected =
+    quota.blockedWindow === 'week' ? quota.weekly : quota.daily;
+  return {
+    premium: quota.premium,
+    tier: quota.tier,
+    limit: selected.limit,
+    used: selected.used,
+    unlimited: quota.daily.limit === 0 && quota.weekly.limit === 0,
+    allowed: quota.allowed,
+    blockedWindow: quota.blockedWindow,
+    resetAt: selected.resetAt,
+    dailyLimit: quota.daily.limit,
+    dailyUsed: quota.daily.used,
+    dailyRemaining: quota.daily.remaining,
+    weeklyLimit: quota.weekly.limit,
+    weeklyUsed: quota.weekly.used,
+    weeklyRemaining: quota.weekly.remaining,
+    reservationConsumed: Boolean(quota.consumed),
+    quota
+  };
+};
+
+/**
+ * Reads the caller's current live-search allowance without consuming it. A
+ * limit of 0 means unlimited in either window.
  *
  * Deliberately NOT route middleware: the quota is only relevant once we know a
  * search is actually warranted, which is decided mid-request.
  */
 export const checkWebSearchQuota = async (user) => {
-  const premium = isPremiumUser(user);
-  const limit = await getSetting(
-    premium ? 'webSearchPremiumDailyLimit' : 'webSearchFreeDailyLimit'
-  );
-
-  const today = todayStr();
-  const stored = user?.dailyUsage;
-  const used =
-    stored && stored.date === today ? stored.webSearches || 0 : 0;
-
-  return {
-    premium,
-    limit,
-    used,
-    unlimited: limit === 0,
-    allowed: limit === 0 || used < limit
-  };
+  const quota = await getUserUsageQuota({
+    user,
+    kind: USAGE_KINDS.WEB_SEARCHES
+  });
+  return formatWebSearchQuota(quota);
 };
 
+/** Atomically reserves one daily+weekly slot before the provider is called. */
+export const reserveWebSearchQuota = async (user) => {
+  const quota = await consumeUserUsage({
+    user,
+    kind: USAGE_KINDS.WEB_SEARCHES
+  });
+  applyUsageSnapshotToAuthUser(user, quota);
+  return formatWebSearchQuota(quota);
+};
+
+/** Returns a reservation when the provider/tool did not actually search. */
+export const refundWebSearchQuota = async (userId) =>
+  refundUserUsage({ userId, kind: USAGE_KINDS.WEB_SEARCHES });
+
 /**
- * Records one actually-performed search against both the per-user daily bucket
- * and the global daily roll-up.
+ * Records one actually-performed search in the global daily roll-up. Per-user
+ * daily+weekly usage is reserved before the provider call, so it is not changed
+ * here (and is refunded if the tool was not used).
  *
  * Call this ONLY after the model really searched. Charging on intent would
  * inflate the dashboard counters the client intends to budget Phase 2 against.
  */
-export const recordWebSearch = async ({ userId, premium = false }) => {
+export const recordWebSearch = async ({ premium = false }) => {
   const today = todayStr();
 
   try {
@@ -171,34 +206,6 @@ export const recordWebSearch = async ({ userId, premium = false }) => {
     );
   }
 
-  if (!userId) return;
-
-  try {
-    // Reset the bucket if it is stale, otherwise increment in place. Two
-    // statements because $inc and $set on the same path cannot be combined.
-    const result = await User.updateOne(
-      { _id: userId, 'dailyUsage.date': today },
-      { $inc: { 'dailyUsage.webSearches': 1 } }
-    );
-
-    if (result.matchedCount === 0) {
-      await User.updateOne(
-        { _id: userId },
-        {
-          $set: {
-            'dailyUsage.date': today,
-            'dailyUsage.webSearches': 1
-          },
-          $setOnInsert: {}
-        }
-      );
-    }
-  } catch (error) {
-    console.error(
-      '[webSearch.service] failed to record user usage:',
-      error?.message || error
-    );
-  }
 };
 
 /**
