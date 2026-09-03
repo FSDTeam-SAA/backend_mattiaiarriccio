@@ -560,7 +560,7 @@ const resolveWeather = async ({ message, language, location, conversation }) => 
   const requestedPlace = extractRequestedPlace(message);
   if (requestedPlace && !placeMatchesLocation(requestedPlace, effectiveLocation)) {
     const requestedLocation =
-      (await resolveLocation({ city: requestedPlace })) || { city: requestedPlace };
+      (await resolveLocation({ city: requestedPlace }, language)) || { city: requestedPlace };
     const snapshot = await getWeatherSnapshot({
       location: requestedLocation,
       language,
@@ -590,7 +590,7 @@ const resolveWeather = async ({ message, language, location, conversation }) => 
   }
 
   const resolvedLocation =
-    (await resolveLocation(effectiveLocation)) || effectiveLocation;
+    (await resolveLocation(effectiveLocation, language)) || effectiveLocation;
   const snapshot = await getWeatherSnapshot({
     location: resolvedLocation,
     language,

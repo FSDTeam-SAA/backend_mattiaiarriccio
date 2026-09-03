@@ -276,6 +276,7 @@ test('builds a snapshot from a real-shaped provider response', async (t) => {
   // Both endpoints were consulted, geocoding first.
   assert.equal(calls.length, 2);
   assert.match(calls[0], /geocoding-api/);
+  assert.match(calls[0], /language=en/);
 });
 
 test('the city inserted into a current-location prompt keeps the GPS point', () => {
@@ -455,7 +456,8 @@ test('safety flags are derived from the measurements, not from prose', async (t)
 });
 
 test('Italian requests get Italian condition labels', async (t) => {
-  const restore = stubFetch();
+  const calls = [];
+  const restore = stubFetch(calls);
   t.after(restore);
 
   const snapshot = await getWeatherSnapshot({
@@ -464,6 +466,7 @@ test('Italian requests get Italian condition labels', async (t) => {
   });
 
   assert.equal(snapshot.current.condition, 'Temporale');
+  assert.match(calls[0], /language=it/);
 });
 
 test('an upstream failure returns null instead of throwing', async (t) => {
