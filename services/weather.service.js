@@ -382,21 +382,22 @@ const round = (value, decimals = 0) => {
  * can already carry a validated GPS point and bypass this lossy round trip;
  * typed place names still use the geocoder.
  */
-const geocodePlace = async ({ city, region, country }) => {
+const geocodePlace = async ({ city, region, country }, language = 'it') => {
   const name = String(city || region || country || '').trim();
   if (!name) return null;
 
-  const cacheKey = `${name}|${country || ''}`.toLowerCase();
+  const lang = String(language).startsWith('it') ? 'it' : 'en';
+  const cacheKey = `${name}|${country || ''}|${lang}`.toLowerCase();
   const cached = readCache(geocodeCache, cacheKey);
   if (cached) return cached;
 
   const params = new URLSearchParams({
     name,
     count: '10',
-    // Open-Meteo searches translated place names. Using Italian is important
-    // here: its English index does not return Rome for "Roma" or Milan for
-    // "Milano", and used to leave similarly named foreign towns at the top.
-    language: 'it',
+    // The provider localizes country and administrative-area names. Keeping
+    // language in both this request and the cache key prevents an English
+    // lookup from leaking English place labels into an Italian weather card.
+    language: lang,
     format: 'json'
   });
 
@@ -442,12 +443,12 @@ const geocodePlace = async ({ city, region, country }) => {
  * biased toward another. Failure remains non-fatal: callers can keep using the
  * original coarse input and still produce an answer.
  */
-export const resolveLocation = async (location) => {
+export const resolveLocation = async (location, language = 'it') => {
   if (!location) return null;
   if (hasUsableCoordinates(location)) return { ...location };
 
   try {
-    const place = await geocodePlace(location);
+    const place = await geocodePlace(location, language);
     if (!place) return null;
 
     return {
@@ -771,7 +772,7 @@ export const getWeatherSnapshot = async ({
           longitude,
           timezone: String(location.timezone || '')
         }
-      : await geocodePlace(location);
+      : await geocodePlace(location, lang);
     if (!place) {
       console.warn(
         `[weather.service] no coordinates for "${location.city || location.region || location.country}"`
