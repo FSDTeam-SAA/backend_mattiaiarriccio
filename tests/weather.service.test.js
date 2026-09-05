@@ -402,6 +402,57 @@ test('device coordinates go straight to the forecast instead of a city centroid'
   assert.match(calls[0], /longitude=90\.41252/);
 });
 
+test('blank coordinate fields are geocoded instead of becoming zero coordinates', async (t) => {
+  const calls = [];
+  const restore = stubFetch(calls);
+  t.after(restore);
+
+  const snapshot = await getWeatherSnapshot({
+    location: {
+      city: 'Coordinate Gap',
+      country: 'BD',
+      latitude: '',
+      longitude: '   '
+    },
+    language: 'en'
+  });
+
+  assert.ok(snapshot);
+  assert.ok(calls.length >= 1);
+  assert.match(calls[0], /geocoding-api/);
+  assert.doesNotMatch(calls.join('\n'), /latitude=0(?:&|$)/);
+});
+
+test('missing WMO codes stay unavailable instead of being reported as clear sky', async (t) => {
+  const response = makeForecastResponse({
+    currentCode: null,
+    currentFeelsLike: 20,
+    currentGust: 20
+  });
+  response.hourly.weather_code.fill(null);
+  response.daily.weather_code.fill(null);
+
+  const restore = stubFetch([], response);
+  t.after(restore);
+
+  const snapshot = await getWeatherSnapshot({
+    location: {
+      city: 'Unknown Conditions',
+      country: 'IT',
+      latitude: 10.1234,
+      longitude: 11.2345
+    },
+    language: 'en'
+  });
+
+  assert.ok(snapshot);
+  assert.equal(snapshot.current.weatherCode, null);
+  assert.equal(snapshot.current.icon, 'unknown');
+  assert.equal(snapshot.current.condition, 'Not available');
+  assert.equal(snapshot.hourly[0].weatherCode, null);
+  assert.equal(snapshot.daily[0].weatherCode, null);
+});
+
 test('the hourly strip starts at the current hour, not at midnight', async (t) => {
   const restore = stubFetch();
   t.after(restore);

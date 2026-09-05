@@ -12,6 +12,7 @@ import {
 } from '../models/liveInfoSuggestion.model.js';
 import { DEFAULT_SETTINGS } from '../services/settings.service.js';
 import { matchesTriggers } from '../services/webSearch.service.js';
+import { resolveLiveInfoSuggestions } from '../controllers/chatConfig.controller.js';
 
 const LANGUAGES = ['en', 'it'];
 
@@ -82,6 +83,38 @@ test('Quick Questions stay separate from Web Search', () => {
       `${language} Quick Questions must all use stored WeSafe guidance`
     );
   }
+});
+
+test('chat config recovers the four localized buttons when stored rows are absent', () => {
+  for (const language of LANGUAGES) {
+    const buttons = resolveLiveInfoSuggestions(language, []);
+    assert.equal(buttons.length, 4);
+    assert.ok(buttons.every((entry) => entry.id.startsWith(`default-live-${language}-`)));
+    assert.deepEqual(
+      buttons.map((entry) => entry.order),
+      [0, 1, 2, 3]
+    );
+  }
+});
+
+test('configured Live Information rows take precedence over product defaults', () => {
+  const buttons = resolveLiveInfoSuggestions('it', [
+    {
+      _id: 'lis_custom',
+      title: 'Meteo personalizzato',
+      prompt: 'Controlla il meteo per {location}.',
+      icon: '',
+      language: 'it',
+      kind: 'live_info',
+      order: 7,
+      active: true,
+      requiresLocation: true
+    }
+  ]);
+
+  assert.equal(buttons.length, 1);
+  assert.equal(buttons[0].id, 'lis_custom');
+  assert.equal(buttons[0].title, 'Meteo personalizzato');
 });
 
 test('dashboard location placeholder variants normalize to one API token', () => {
