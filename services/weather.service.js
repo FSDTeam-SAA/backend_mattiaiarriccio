@@ -44,14 +44,23 @@ const DAILY_FORECAST_DAYS = 7;
 const forecastCache = new Map();
 const geocodeCache = new Map();
 
+/** Number() treats null and an empty string as zero, which would turn missing
+ * coordinates into (0, 0) and a missing WMO code into "clear sky". */
+const finiteNumber = (value) => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' && !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 const hasUsableCoordinates = (location) => {
-  const latitude = Number(location?.latitude);
-  const longitude = Number(location?.longitude);
+  const latitude = finiteNumber(location?.latitude);
+  const longitude = finiteNumber(location?.longitude);
   return (
-    Number.isFinite(latitude) &&
+    latitude !== null &&
     latitude >= -90 &&
     latitude <= 90 &&
-    Number.isFinite(longitude) &&
+    longitude !== null &&
     longitude >= -180 &&
     longitude <= 180
   );
@@ -548,7 +557,7 @@ const buildHourly = (data, lang) => {
   ) {
     if (!String(times[i] || '').trim() || !Number.isFinite(temps[i])) continue;
 
-    const code = Number(codes[i]);
+    const code = finiteNumber(codes[i]);
     const { icon, label } = describeCode(code, lang);
     const flags = buildSafetyFlags({
       code,
@@ -650,7 +659,8 @@ const buildDaily = (data, lang, limit = DAILY_FORECAST_DAYS) => {
 
   const out = [];
   for (let i = 0; i < dates.length && out.length < limit; i += 1) {
-    const code = Number(codes[i]);
+    if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(dates[i] || ''))) continue;
+    const code = finiteNumber(codes[i]);
     const { icon, label } = describeCode(code, lang);
     out.push({
       date: dates[i],
@@ -752,8 +762,8 @@ export const getWeatherSnapshot = async ({
   const lang = String(language).startsWith('it') ? 'it' : 'en';
   if (!location) return null;
 
-  const latitude = Number(location.latitude);
-  const longitude = Number(location.longitude);
+  const latitude = finiteNumber(location.latitude);
+  const longitude = finiteNumber(location.longitude);
   const hasExactPoint = hasUsableCoordinates(location);
 
   try {
@@ -811,7 +821,7 @@ export const getWeatherSnapshot = async ({
       return null;
     }
 
-    const code = Number(current.weather_code);
+    const code = finiteNumber(current.weather_code);
     const { icon, label } = describeCode(code, lang);
     const allHours = buildHourly(data, lang);
     const projection = resolveForecastProjection(

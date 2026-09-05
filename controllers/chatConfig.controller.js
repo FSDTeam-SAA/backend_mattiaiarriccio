@@ -7,6 +7,7 @@ import {
   listActiveLiveInfoSuggestions,
   serializeLiveInfoSuggestion
 } from './liveInfoSuggestion.controller.js';
+import { DEFAULT_LIVE_INFO_BUTTONS } from '../services/webSearchSeed.service.js';
 import { sendSuccess } from '../utils/response.js';
 
 /**
@@ -24,6 +25,30 @@ const toClientSuggestion = (doc) => {
     order: item.order,
     requiresLocation: item.requiresLocation
   };
+};
+
+/**
+ * Keep the four product-level Live Information actions available when an
+ * existing database has no active rows for one language. Configured dashboard
+ * rows remain authoritative whenever any exist; the master Web Search/source
+ * gates are applied by the caller before this fallback is used.
+ */
+export const resolveLiveInfoSuggestions = (language, docs = []) => {
+  const configured = Array.isArray(docs)
+    ? docs.map(toClientSuggestion)
+    : [];
+  if (configured.length > 0) return configured;
+
+  return DEFAULT_LIVE_INFO_BUTTONS.filter(
+    (item) => item.language === language
+  ).map((item) => ({
+    id: `default-live-${language}-${item.order}`,
+    title: item.title,
+    prompt: item.prompt,
+    icon: item.icon || '',
+    order: item.order,
+    requiresLocation: item.requiresLocation === true
+  }));
 };
 
 export const getChatConfig = catchAsync(async (req, res) => {
@@ -52,6 +77,10 @@ export const getChatConfig = catchAsync(async (req, res) => {
   const liveInfoAvailable =
     Boolean(webSearchEnabled) && allowedDomains.length > 0;
 
+  const liveInfoSuggestions = liveInfoAvailable
+    ? resolveLiveInfoSuggestions(language, liveInfoDocs)
+    : [];
+
   // Quick Questions have one canonical source: the dashboard-managed rows.
   // Falling back to PromptConfig here would make deleting/disabling the last row
   // resurrect an older list and was also the path that exposed object internals
@@ -65,9 +94,7 @@ export const getChatConfig = catchAsync(async (req, res) => {
       suggestedQuestions,
       webSearchEnabled: liveInfoAvailable,
       webSearchSection: sectionContent?.[language] || sectionContent?.en || {},
-      liveInfoSuggestions: liveInfoAvailable
-        ? liveInfoDocs.map(toClientSuggestion)
-        : [],
+      liveInfoSuggestions,
       webSearchExamples: liveInfoAvailable
         ? exampleDocs.map(toClientSuggestion)
         : []
